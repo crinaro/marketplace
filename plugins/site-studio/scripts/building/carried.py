@@ -31,7 +31,7 @@ from building.outcomes import BuildError
 from building.tokens import nfc
 from configschema.configkeys import CARRIED_SOURCE
 from sitechecks import carriedpages
-from sitechecks.page import parse_page
+from sitechecks.page import parse_page, search_out
 from sitechecks.tree import site_base
 
 KEEPS_ITS_PATH = ("site", "redirect", "carried")      # page kinds that never give way to a carried page
@@ -61,6 +61,13 @@ def apply(b):
             held = _check_addresses(b.cfg, path, b.files[CARRIED_SOURCE + path], published)
             if path.lower().endswith(HTML_EXTS):
                 b.notes.append(note(path, held, site_base(b.cfg)))
+
+
+def left_out(data):
+    """True when the page whose bytes are `data` says it is out of search (`sitechecks.page.search_out`: a `robots` meta with `noindex` or `none`,
+    or a meta refresh). Asked by `_Builder.build_sitemap` only under `site.json` `sitemap: "indexable"` (schema 10; design-publish-preflight
+    section 7, dev 1068), for every page the sitemap would list, carried ones included: the bytes are read, never changed."""
+    return search_out(parse_page("", data.decode("utf-8", "replace"))) is not None
 
 
 def _refuse_unnamed(files, named):

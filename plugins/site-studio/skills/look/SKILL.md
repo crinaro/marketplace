@@ -113,6 +113,29 @@ site-studio".
   and with no channel prints neither: the plugin never hides a `{{site}}` the look still places, that is the look's
   choice. A look using either raises the site to schema 9 (run `build.py raise-schema --repo . --to 9` first, as for 7 and
   8, and show its report); a copy of the plugin older than 0.9.0 then says "update site-studio".
+- **A card's own picture, `card.image` (0.10.0).** A look may write the picture of every card (a portfolio's grid, the home's featured
+  cards and a hand page's) as its own part, so a card can carry its own `sizes` apart from the site-wide `image` part's. The part
+  takes the slots a picture has: `src`, `alt`, `width`, `height`, `srcset`, `sizes` and `focus`; a slot the picture has no value for
+  (the `width` of a file with no pixel size, a `srcset` with no copies) is left out. It is printed where the card's wrap places
+  `{{image}}`. **No shipped look holds it and derive never reads it** (derive does not try this place; a derived look builds as it did),
+  so show the person this as text to copy into `site/looks/local.json`, and nothing changes until they add it:
+
+  ```
+  "card": {
+    "image": "<img src=\"{{src}}\" alt=\"{{alt}}\" width=\"{{width}}\" height=\"{{height}}\" srcset=\"{{srcset}}\" sizes=\"(min-width: 40rem) 300px, 100vw\">"
+  }
+  ```
+
+  A look that writes it raises the site to schema 10 (run `build.py raise-schema --repo . --to 10` first, as for 7 to 9, and show its
+  report); a copy of the plugin older than 0.10.0 then says "update site-studio". Without the part a card prints exactly what it printed.
+- **Picture sizes and `data-ss-held` (0.10.0).** An `<img>` in a picture part may carry `data-ss-held` with `width` and `height`.
+  Only with `"images": {"sizes": "held"}` in `site/site.json` does a page that prints one link the plugin's small stylesheet
+  `site-studio/held.css`, which keeps the picture's layout; without that key the attribute does nothing and no stylesheet is
+  published, so the **key** is the switch, never the attribute. `adopt.py setting images.sizes held` writes both for the look adopt
+  derived, and never edits `local.json`; a part the person writes with sizes of its own needs no `data-ss-held` to be valid. A
+  picture inside a plugin block, or a hand-written page's, is never given the attribute. Say the costs before they choose `held`
+  (the adopt skill lists them): one more file, and a visitor whose browser is older than about 2022, or for whom the file does not
+  load, gets the plain layout.
 - **Words a card never prints.** `references.unprinted` in `site/site.json` lists words that are stored on a reference
   and left off every card: `"references": {"unprinted": {"channel": ["Website"]}}` keeps `Website` in the file and
   prints nothing for it. With `references.types` or `references.channels` set, each unprinted word must be in that list.

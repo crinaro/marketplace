@@ -122,7 +122,12 @@ read-only, against a build someone else made (section 8 AO step 2). `OUT` is a b
 folder whose `site/site.json` and `.site-studio/addresses.json` that build used (the scratch tree adopt converted,
 NOT HEAD; default DEV), `DEV` the dev repo whose `origin` V1 reads. It pushes nothing, writes no `dryrun.json` and
 does not need HEAD on origin/main. It prints ONE JSON object, `{"v": 1, "causes": [{"cause", "state", "detail"}]}`,
-and exits 1 when any cause BLOCKS, else 0. The causes, each from a plugin enumeration and never the site's text:
+and exits 1 when any cause BLOCKS, else 0. Since 0.10.0 (dev 1068) each row is printed as it is answered, one JSON line each
+(`{"v": 1, "row": {...}}`), before that object; a gate cause carries its `findings` (`[{family, path, message}]`); a check that passed and is
+easy to mistake for one never asked prints `{"v": 1, "ran": "staging"}`; the last row asks the staged tree: in a depth-one clone of the public
+repo and with no git hook run, the build is staged with `git add` and the index written as a tree (no commit, so no identity), and a tree that
+is not the build (a global ignore rule, a clean filter, a line-ending setting) is the `publish/staging` cause, a person's and never filed. A
+reader that stops waiting keeps the rows already printed. The causes, each from a plugin enumeration and never the site's text:
 `publish/gate/<family>` (check_site's findings), `publish/address` (the guard), `publish/pages-workflow` (C4/C5, a
 person cause), `publish/serves-dev-repo` (the DEV repo itself serves Pages, a person cause) and `env/public-target`
 (no publicRepo, V1, V3, a V2 refusal: blocking, never filed). `state` is `blocks` or `not-checked`; ONLY a network

@@ -34,10 +34,16 @@
   the `http://` finding: the old site served that link, and it loads nothing of this site. `reachable` EXEMPTS a
   carried file, as it exempts the 404 page and a redirect stub: it is an address kept alive, and whether the new
   pages still link it is a difference parity already shows. A tree without the key is judged as before.
+
+  Dated note, 2026-11-25 (design-publish-preflight section 3.4, dev 1068; looser only): under `site.json` `images.sizes` (schema 10,
+  `as-written` or `held`) a size copy (`<stem>.w<N>.<ext>` or `<stem>-<N>w.<ext>`) whose ORIGINAL a page or stylesheet references
+  counts as referenced: the old site served those addresses and the address guard keeps them. One `reachable:` note counts them. A copy
+  whose original nothing references, and any tree without the key, are judged as before.
 """
 
 import os
 import posixpath
+import re
 from configschema import frontmatter
 from sitechecks.carriedpages import SITE, read_address
 from sitechecks.kinds import FONT_EXTS, ROOT_EXEMPT, is_font_licence
@@ -156,6 +162,18 @@ class LinkChecks(object):
                 return False
         return True
 
+    _COPY_NAMES = (re.compile(r"^(?P<stem>.+)\.w\d+(?P<ext>\.\w+)$"), re.compile(r"^(?P<stem>.+)-\d+w(?P<ext>\.\w+)$"))
+
+    def _copy_of_referenced(self, rel):
+        """True when `rel` is a size copy (`<stem>.w<N>.<ext>` or `<stem>-<N>w.<ext>`) of an original that a page or stylesheet
+        references: under `images.sizes` (either value) the copy is kept as that picture's own, because the old site served its address
+        and the address guard keeps it (design-publish-preflight section 3.4)."""
+        for rx in self._COPY_NAMES:
+            m = rx.match(rel)
+            if m and (m.group("stem") + m.group("ext")) in self.referenced:
+                return True
+        return False
+
     def reachable(self):
         fam = "reachable"
         if "index.html" not in self.pages:
@@ -188,6 +206,8 @@ class LinkChecks(object):
                 continue
             self.r.add(fam, rel, "page cannot be reached from the home page by following links")
         font_dirs = set(posixpath.dirname(r) for r in self.t.files if r.lower().endswith(FONT_EXTS))
+        sizes_key = (getattr(self.cfg, "images", None) or {}).get("sizes")      # schema 10 (design-publish-preflight 3.4, dev 1068)
+        kept_copies, kept = sizes_key in ("as-written", "held"), 0
         for rel in sorted(self.t.files):
             low = rel.lower()
             name = posixpath.basename(rel)
@@ -200,4 +220,10 @@ class LinkChecks(object):
             if rel in self.flagged or rel in self.carried:
                 continue
             if rel not in self.referenced:
+                if kept_copies and self._copy_of_referenced(rel):
+                    kept += 1
+                    continue
                 self.r.add(fam, rel, "published but not referenced by any page or stylesheet")
+        if kept:
+            self.r.notes.append("reachable: %d size copy(ies) of a picture a page uses are kept though no page links them "
+                                "(`images.sizes: %s` in site.json; the old site served those addresses)" % (kept, sizes_key))

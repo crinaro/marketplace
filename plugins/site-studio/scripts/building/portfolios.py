@@ -30,7 +30,8 @@ def card_meta_html(builder, piece, pf):
     labelled = pf.settings.get("cardLabels", True)      # schema 4 `cardLabels: false`: values only on a card
     cm = [("%s: %s" % (names[k], frontmatter.meta_text(piece.meta[k])) if (k in names and labelled)
            else frontmatter.meta_text(piece.meta[k]))
-          for k in readsources.rows(builder.look, "card.meta.text", piece.meta, pf.settings["cardMeta"])]
+          for k in readsources.rows(builder.look, "card.meta.text", piece.meta, pf.settings["cardMeta"],
+                                    pf.settings.get("blankMeta") == "omit")]
     return builder.r("card", "meta", {"text": " \u00b7 ".join(cm)}, piece.source) if cm else ""
 
 
@@ -90,7 +91,7 @@ class _Portfolios(object):
         to = "%s/%s/index.html" % (piece.portfolio, piece.slug)
         pf = self.model.portfolio(piece.portfolio)         # the piece's OWN portfolio: every trigger is read from it
         picture = pictures.card_picture(self, piece, pf.settings, pictures.CARD_IMAGE_TARGET)     # design-movement-view section 5: `cover` unless a trigger or (0.8.0) a `reads` entry says otherwise
-        img = picture.html(self, from_out) if picture else ""
+        img = pictures.place_html(self, "card", picture, from_out) if picture else ""     # 0.10.0: the look's own `card.image` part; with none, `picture.html` as before
         teaser = card_teaser_html(self, piece)
         meta = card_meta_html(self, piece, pf)
         position = self.card_position(piece, pf, from_out)        # "" and no count when the effective card.wrap lacks it
@@ -197,7 +198,8 @@ class _Portfolios(object):
         names = pf.settings["labels"]["meta"]
         meta_rows = "".join(self.r("meta-list", "item", {"name": names.get(k) or k[:1].upper() + k[1:],
                                                          "value": frontmatter.meta_text(piece.meta[k])}, piece.source)
-                            for k in readsources.rows(self.look, "meta-list.item.value", piece.meta, pf.settings["meta"]))
+                            for k in readsources.rows(self.look, "meta-list.item.value", piece.meta, pf.settings["meta"],
+                                                      pf.settings.get("blankMeta") == "omit"))
         dl = self.r("meta-list", "wrap", {"items": meta_rows}) if meta_rows else ""
         body = self.markdown(piece.body, piece.source, out, piece.folder, piece.first_line)
         desc = readsources.slot(self.look, "head.description", piece.meta.get) or \

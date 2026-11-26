@@ -33,12 +33,38 @@ blocked**. For `apply` the first line says which: `adopt completed`, or `adopt b
 person. The exit code alone tells a completed `apply` from a blocked one.
 
 The person's decisions are kept in `.site-studio/adopt-plan.json`, written only by the `adopt.py`
-steps below. Never edit that file by hand.
+steps below. Never edit that file by hand. From 0.10.0 it is written at plan schema 6 only when it holds an answer 0.10.0 adds
+(`covered`, `proof --as-is`, or one of the three settings below). A copy of the plugin older than 0.10.0 reading such a plan refuses it, with
+"update site-studio if the plan came from a newer one, or delete .site-studio/adopt-plan.json" or "unknown key 'settings'; edit or delete
+.site-studio/adopt-plan.json". **Tell the person to update site-studio on that computer, never to delete the plan**: deleting it loses every answer.
 
 ## Preconditions
 
 Run `adopt.py check` first. It prints `adopt ok: <origin/main or HEAD> <sha> can be converted`, or
-refuses with the reason. **It exits `1` while any `you decide` problem exists**, after printing every problem with its fix, so a red `check` is a list to work through, not a failure to report. Do not work around a refusal. Before that line it may print, once, which
+refuses with the reason. **It exits `1` in two cases, and says which in one fixed sentence**, after printing every problem with its fix, so a red `check` is a list to work through, not a failure to report:
+
+- A `you decide` problem exists. The last line reads (`<basis>` is `origin/main` or `HEAD`):
+
+  ```
+  adopt check: <basis> <sha> cannot be converted until the N problem(s) marked `you decide` are settled
+  ```
+
+- The tree can be converted, a `parity` has been measured, and the publish checks (next section) refuse the converted site:
+
+  ```
+  adopt check: <basis> <sha> can be converted, but the publish would refuse it: N finding(s)
+  ```
+
+  The same line says "apply would refuse it: N refusal(s)" (alone, or after the publish's count) when `apply` itself would refuse before
+  writing anything: a covered or rule unit of a file that stays, an archive address already taken, a path with a tab or newline, a branch
+  that already exists, no git identity, an unreadable reports record. Each is listed under "apply would refuse" with its fix, by `check`
+  and again after `parity`'s verdict; this can be said before any `parity` too.
+
+  Read the list printed before it to the person, and do not call the site ready. Before any `parity` the list is for the
+  plugin's default look, says so ("before parity: measured with the plugin's own markup; `adopt.py parity` gives the final
+  list"), and never changes the exit code.
+
+Do not work around a refusal. Before that line it may print, once, which
 tree adopt will convert and whether parity can run (the **parity basis**, below), and every problem
 it found in what it would write, all at once, each marked `apply fixes this` or `you decide`.
 
@@ -47,8 +73,10 @@ it found in what it would write, all at once, each marked `apply fixes this` or 
 - The dev repo has no uncommitted changes. Untracked `.claude/worktrees/` and adopt's own plan
   file do not count.
 - **`apply` needs `gh`, logged in, and the network:** it reads the public repo to check that a
-  publish would be accepted, then publishes. `check`, `inventory` and `parity` need neither. A read
-  that cannot be answered (no `gh`, no network) is printed as `NOT CHECKED`, never as a pass.
+  publish would be accepted, then publishes. `check`, `inventory` and `parity` need neither (beyond the fetch
+  below); `adopt.py check --online` and `apply --dry-run` read the public repo through `gh` and the network too (read
+  only: nothing is published). A read that cannot be answered (no `gh`, no network) is printed as `NOT CHECKED`
+  (a `not checked` row in the list), never as a pass.
 - **adopt fetches for itself.** `check`, `inventory`, `parity` and `apply` run
   `git fetch origin main` and refuse if the fetch fails. Do not fetch on its behalf. The steps that
   record a decision (`confirm`, `unit`, `fact`, `reviewed`, `paper`, `folder`, `convert`, `kind`) make no network
@@ -110,9 +138,15 @@ Record each decision as the person makes it:
   by default (no decision)". Go through every residual unit the inventory lists, by its id:
   `adopt.py unit <path> <unit-id> person-data --kind context|voice|rule [--name <slug>]` ("person
   data, move it"), `adopt.py unit <path> <unit-id> rule` ("a standing rule of mine, keep it for
-  every agent": see **Standing rules** below) or `adopt.py unit <path> <unit-id> keep` ("behaviour
-  the plugin lacks, keep it"). The file becomes removable only when every unit is decided and none
-  is `keep`, or when parity (step 3) passes.
+  every agent": see **Standing rules** below), `adopt.py unit <path> <unit-id> keep` ("behaviour
+  the plugin lacks, keep it") or, from 0.10.0, `adopt.py unit <path> <unit-id> covered` ("the plugin covers this; drop it").
+  `adopt.py unit <path> --rest covered` answers every unit not answered yet, printing each one's first line **before** it
+  stores them: read those lines to the person first. For a PARTIAL script that has no units to go through,
+  `adopt.py confirm <path> --covered` is the same answer for the whole file (never for a local builder file, which is dropped
+  only after parity says the site is the same). `covered` is refused on a unit of a file that stays (a drop travels only with
+  the file it is in); the file is archived, never deleted, so the words stay in `archive/`, and the commit lists each covered
+  unit by file and first line under "Covered by the plugin (dropped)". The file becomes removable only when every unit is
+  decided and none is `keep`, or when parity (step 3) passes.
 - **AMBIGUOUS:** show both scores; the person decides which capability it is:
   `adopt.py confirm <path> --as <capability>` (or `--keep`).
 - **CUSTOM:** kept, listed as a customisation.
@@ -335,6 +369,33 @@ from the old menu (`nav.labels.about`, `nav.labels.resume`; written only when th
 `About` or `Resume`), measured on every page's menu; and whether the resume page's `<title>` leads with that menu
 word rather than the resume's own title (`resume.titleForm`: `"page"`), measured on the resume page.
 
+From 0.10.0 adopt also settles three things the publish checks would otherwise refuse, each a schema-10 key (a copy of the plugin older
+than 0.10.0 says "update site-studio" on a site that holds one). **Two of them are read from the old site, never measured**, and the row
+says so ("read from your old pages", "read from your old sitemap, which parity cannot compare"):
+
+- **`images.sizes`** (`as-written` or `held`). When the old pages' pictures carry no `width` and `height` and the converted pages' still do,
+  adopt writes **`as-written`** by itself: no byte of any page changes (a site that measured EQUAL stays EQUAL) and the publish check stops
+  asking for sizes on the whole site, hand-written pages included. Its cost, which you say: pages shift while their pictures load, as they
+  did, and a picture added later without a size is counted in a note, not refused. **`held` is only ever the person's choice**
+  (`adopt.py setting images.sizes held`; `--clear` forgets it). It adds `width` and `height` to the pictures of generated pages, and links
+  one more file, `site-studio/held.css`, that keeps the layout. Its costs, said when it is chosen: one more file on pages with pictures; a visitor
+  whose browser is older than about 2022 (an old iPhone is the likely case), or for whom that file does not load, gets the plain way;
+  `parity` is expected to read DIFFERENT (the added file, its link and the `data-` attribute), the person accepts after `parity --keep`'s pictures, and a privacy review is needed,
+  with the `apply` after it on the same UTC day. It completes only the look adopt derived; **a look the person wrote is never edited**,
+  and **pictures in hand-written pages, and any the build did not size, stay as they are and are counted in a note**, never refused; adopt
+  never adds a `srcset`. A picture `held` sized must carry its true size. `parity` does not see image sizes, so
+  when the person's own look adds them it says "parity does not see image sizes: look at the pictures (`adopt.py parity --keep`)".
+- **`sitemap`** (`indexable`; `adopt.py setting sitemap none` declines). Adopt writes it when the converted site has a page that tells search
+  to leave it out (a `noindex` robots meta, or a meta refresh) and the old build's own `sitemap.xml` lists none of them, or there was none:
+  the new `sitemap.xml` then leaves those pages out, and the publish check no longer refuses a `noindex` page that is carried or whose
+  source is `site/src/<same path>`; any other `noindex` page is refused as before. When the old sitemap listed them adopt leaves the
+  sitemap as it was and says so.
+- **`blankMeta.<portfolio>`** (`omit`; `adopt.py setting blankMeta.work false` declines). Offered per portfolio where a piece holds a front
+  matter line with no value (`year:`) for a key the portfolio lists, and judged like any setting by parity: a blank value then prints no row
+  on the piece page and no empty separator on a card. `false` and `0` are values, not blanks.
+
+A published site is never changed by any of the three unless its owner sets the key.
+
 - **A per-portfolio value adopt cannot write.** A setting that lives in a portfolio's `page.md` (a sort order, say) has
   no place to go when a portfolio other than `work` has no `content/<portfolio>/page.md`. The row then reads `not
   written: needs content/<p>/page.md with <key>: <value>; the default stays`, never "no candidate changes what a
@@ -462,6 +523,58 @@ the person did.
 (switched on by `lookLocal`), or edit in `derived.json`, is theirs: it is measured as its own row, derive never
 overwrites it, and when parity prints "look: N of your look entries reproduce the old pages exactly", the `look`
 skill's section "Offer an addition back" is how to draft a suggestion from it; filing one is step 6 below.
+
+**The publish checks (0.10.0): what the publish would refuse is said before `apply`.** `check`, `inventory`, `parity`,
+`apply --dry-run` and `apply` (its step 2) ask the same publish checks of the same converted tree (what `apply` would commit under
+`site/` and `content/`), and print one list: the build's refusals, the resume PDF's proof, the thirteen families of the site gate,
+a MARKUP-ONLY record that no longer holds, a private path in the output, two output names that differ only in case. It reads
+`publish checks: N finding(s) would refuse the publish (nothing is published)`, then one group per finding form, most pages
+first, each naming **who can fix it**:
+
+- **adopt fixes** (`adopt fixes N`): `apply` or a setting does it (the line names it, such as `adopt.py setting images.sizes ...`).
+- **the site**: an edit in `content/` or `site/`, named with the file where the page has a source. Tell the person; it is theirs.
+- **you**: an answer, an account, a new PDF or a file only they can make (the resume PDF's proof is this: see below).
+- **the plugin**: nothing a site can do; `adopt.py report` files it (step 6). A finding that is the site's, yours or adopt's is
+  never recorded as a plugin cause and is never offered for filing.
+
+Each group lists five pages and "and N more"; `adopt.py check --all` and `inventory --json` (`publish`, every finding) list all.
+`parity --json` carries `publish` too. **Read the list to the person as it is printed.** Three things to say plainly:
+
+- **Before the first `parity`** the list is "measured with the plugin's own markup": the findings of a family the look decides
+  (`media`, `performance`, `head`, `reachable`) are only counted, never listed page by page, because the look `parity` chooses
+  settles them. Do not ask the person to fix those yet.
+- **A check that did not run is a row, never a pass:** `not checked: <what>: <why> (<how to run it>)`. After `check`, `inventory`
+  and `parity` the list ends with "2 checks not asked here: the staged tree against the public repo, and the public repo, its Pages
+  settings and its published addresses (`adopt.py check --online`)".
+- **`adopt.py check --online`** (read only; needs `gh`, logged in, and the network) asks those two as well, warns of a `core.hooksPath`
+  or `commit.gpgsign` of the person's git and of a `gh` token that lists scopes without `workflow`, and prints "can still stop apply"
+  with what no check can know before `apply` (the person's answer at the publish ask; no privacy review covering this build; a
+  workflow, `main` or the public repo that moved; Pages not building; the push refused; a hook that refuses the commit; a file or choice
+  changed after the last `parity`).
+
+**The resume PDF's proof (0.10.0).** The build refuses a resume PDF with no proof beside it (`<pdf>.json`), and a site adopted from
+elsewhere has none. `adopt.py proof` prints where it stands, and nothing in it writes the proof: `apply` does, in its one commit.
+
+- **The proof is measured both ways:** 95% of the resume page's words must be in the PDF, and 95% of the PDF's own words on the resume
+  page (its whole printed text), so a PDF that says more than the page ("the PDF holds words the resume page does not: ...") is not
+  proved; a resume page under 20 words is too short to judge and is never proved. Both go to the person's answers below.
+- **The plugin's reader finds 95% or more of the resume page's words in the existing PDF, and the PDF says no more:** `check` says "your resume PDF <pdf> was
+  checked against the resume page: N% of its words found; `apply` writes its proof, and the PDF does not change". Nothing to do.
+- **It finds less, or cannot read it:** `check` lists "the resume PDF <pdf> has no proof beside it (the plugin's reader found N% ...,
+  and 95% are needed; it did not find: ...; this can be the reader's fault: joined letters, hyphens at line ends, languages written
+  without spaces)", and the answers are the person's: **`adopt.py proof --as-is`** if they say the PDF is right, **`adopt.py proof
+  --print`** to print a new one, or update the PDF or the resume page. Ask which; never choose for them.
+- **`proof --as-is`** stores the person's word, bound to the PDF and to the resume as they are (void when either changes: "you vouched
+  for this PDF against an older resume ..., vouch again with `adopt.py proof --as-is`, or update the PDF"). `apply` writes the proof and its commit says the person
+  vouched for the PDF. The gate still lists the PDF as not read, so **the privacy review must open it** (`/site-studio:review`), and
+  the `apply` that follows that review must run **before 00:00 UTC of the review's day**, or the review is made again (the stop
+  prints "run `adopt.py apply` again before 00:00 UTC (HH:MM here), or the review has to be made again"). `--as-is` does not answer
+  the PDF's hidden details (an author, an unknown creator program, a title that is no page's): those findings stand.
+- **`proof --print`** prints a new PDF from the converted resume page with Chrome and copies only the PDF to its path; the visitor
+  gets that PDF, a different file, the next time either builder publishes. It refuses unless this checkout's `HEAD` is the parity
+  basis, unless a `parity` has run, and while `resume.paper` is unanswered (`adopt.py paper Letter|A4`). Say that the new PDF is
+  committed by the person first (look at it, commit it, then `adopt.py inventory` and `adopt.py parity`), and that a template's
+  `.sha256` stamp beside the PDF may make the old builder stop after it (the next `parity` says so).
 
 ## 2. Keep the person's data, before anything is removed
 
@@ -601,12 +714,19 @@ this".
 ## 4. Apply: one process, behind one ask
 
 Run `adopt.py apply --dry-run` first and show the person what it would do. It writes, publishes and
-pushes nothing, and says whether a real `apply` would stop, blocked. Then `adopt.py apply`. **Ask the
+pushes nothing, and says whether a real `apply` would stop, blocked. **From 0.10.0 it asks step 2's checks too**, the
+offline ones and, where `gh` and the network answer, the public repo's (a row that could not be asked reads `not checked`,
+never a pass), so a stop that step 2 would make is said here, in the list from "The publish checks" above, with who can fix
+each finding. A dry run still cannot know what the person's answer at the publish ask, a privacy review, Pages or the push
+will say: `adopt.py check --online` lists them under "can still stop apply". Then `adopt.py apply`. **Ask the
 person before you run it, and tell them what it does**: it publishes the converted site (public
 forever), waits for GitHub Pages, archives the old builder and pushes to the dev repo's `main`. Say too, in
 the same ask, what it will write that a visitor cannot see: the words of the suggested reference layout (read
-from the dry run's block, and that it makes the site schema 9) and, if it is on, that `blocks.unlistedVideos`
-puts a video's private code in the page. The plugin's guard then asks once more (see "The guard" below); that
+from the dry run's block, and that it makes the site schema 9), if it is on, that `blocks.unlistedVideos`
+puts a video's private code in the page, and, if the person chose it, that `images.sizes: held` adds one stylesheet to pages with
+pictures and needs a privacy review. **When the build needs a privacy review** (an ACCEPTED or MARKUP-ONLY verdict, `held`, a vouched
+resume PDF, or a scan finding), say so now, and that the `apply` after the review must run before 00:00 UTC of the day the conversion
+commit is dated, or the review is made again. The plugin's guard then asks once more (see "The guard" below); that
 one yes covers every step.
 
 `apply` runs five steps in one process and says which one it is on:
@@ -618,8 +738,11 @@ one yes covers every step.
    normalised, and which kept files still hold the old form), which hooks were rewritten, what
    customisations were kept, which commits not yet on `origin/main` it includes, and the parity result.
 2. **The publish preconditions**: the dry run's own refusals, run read-only on the build it just made:
-   the site gates, the address guard against the live public repo, the publish target (V1 to V3), and
-   the Pages source. A site that cannot be published stops here, blocked, with the cause. **A dev repo
+   the build's acceptance of the tree (a refused build blocks here; it is never "not run"), the resume PDF's proof, the site gates, the
+   address guard against the live public repo, the publish target (V1 to V3), and the Pages source. A site that cannot be
+   published stops here, blocked, and prints the same list as `check`, grouped by who can fix each finding (adopt, the site,
+   you, the plugin) with its fix, not only family names. A check that could not run (no `gh`, no network) is printed as
+   `NOT CHECKED`; it does not block here, because step 3 asks again. **A dev repo
    that serves a GitHub Pages site itself** (one repo doing both jobs) blocks here as
    `publish/serves-dev-repo`: it is the person's to resolve, never filed. Tell them the way out: create
    a new private repo for the source, move the dev items there, and keep only the published site in the
@@ -678,9 +801,10 @@ Configuration the conversion changes, for you to show as a diff:
   mechanical fixes listed under "Problems in what adopt would write", each of which is a line of
   the commit. A meta-refresh page it converted becomes a `redirects` entry, and the kind the person
   confirmed (`hub` or `custom`) becomes `siteKind`. It is written at the lowest schema the converted
-  site needs (up to 9: a measured setting from 0.6.0 is a schema-6 key, which a copy of the plugin
-  older than 0.6.0 on another computer refuses with "update site-studio", and `blocks.unlistedVideos` or
-  the suggested reference layout makes it schema 9, which a copy older than 0.9.0 refuses the same way), and the
+  site needs (up to 10: a measured setting from 0.6.0 is a schema-6 key, which a copy of the plugin
+  older than 0.6.0 on another computer refuses with "update site-studio", `blocks.unlistedVideos` or
+  the suggested reference layout makes it schema 9, which a copy older than 0.9.0 refuses the same way, and `images`,
+  `sitemap`, `blankMeta` or a `card.image` part makes it schema 10, which a copy older than 0.10.0 refuses), and the
   inventory says when it is more than 1 and why.
 - **`.site-studio/adopt-parity.json`:** the parity verdict (`EQUAL`, `MARKUP-ONLY`, `ACCEPTED`,
   `DIFFERENT`, `UNVERIFIED` or `NOT APPLICABLE`), the basis commit and each difference, with no date.

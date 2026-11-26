@@ -8,8 +8,11 @@ import shutil
 from deploying.gitrun import _git
 
 
-def clone_public(url, dest):
-    _git(os.path.dirname(dest), "clone", "-q", url, dest)
+def clone_public(url, dest, depth=None):
+    """Clone the public repo. `depth` makes the clone shallow (the
+    preflight's: it reads the tree of main and its paths, and V4's ancestry test still answers on one commit of history, which
+    `test_deploy_preflight` holds, dev 1068 U-6). The publish itself clones in full."""
+    _git(os.path.dirname(dest), "clone", "-q", *(("--depth", str(depth)) if depth else ()), url, dest)
     heads = _git(dest, "ls-remote", "--heads", "origin", "main").strip()
     if heads:
         _git(dest, "checkout", "-q", "-B", "main", "origin/main")

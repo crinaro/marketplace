@@ -25,6 +25,8 @@ that item reads NOT CHECKED, never ok; the line is bounded at the budget plus ab
 process start-up. pages_check.check has no `budget_s` seam of its own yet (the amendment's A2.1
 names one), so doctor wraps `get` and `sleep` instead.
 
+TWO NOTES (0.10.0; `doctoring/notes.py`; full report ONLY): a site that could set `blankMeta` or `sitemap` and has not is told, from files on disk.
+
 WINDOWS (design 5.2): `os.name == "nt"` is checked first and the report is one sentence, nothing else.
 
 AS A SESSIONSTART HOOK (`--hook`, named change S7). Scheduled runs (S2) have nobody to answer a
@@ -50,6 +52,8 @@ import time
 HERE = os.path.dirname(os.path.abspath(__file__))
 if HERE not in sys.path:
     sys.path.insert(0, HERE)
+
+from doctoring import notes  # noqa: E402
 
 WINDOWS_SENTENCE = "site-studio 0.1.0 runs on macOS and Linux; Windows is not supported yet."
 # A site/site.json with no engine marker at all (dev #855, design 7.4): not a file to re-save, a site to adopt.
@@ -224,6 +228,7 @@ def full_report(repo):
         lines.append("%-10s %s  %s" % ("gh login", "NOT CHECKED", "gh is not installed"))
     lines.append(pages_line(repo, logged_in=gh_ok))
     lines += ["%-10s %s  %s" % ("look", "NOTE   ", line) for line in look_lines(repo)]
+    lines += ["%-10s %s  %s" % ("publish", "NOTE   ", line) for line in notes.lines(repo)]
     try:
         import sync_main
         line = sync_main.run(repo)

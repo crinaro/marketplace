@@ -20,6 +20,10 @@
   gives no address is a finding naming `previewUrl` and `domain`. An absolute address on the site's host but outside
   its path was never this site's file and is not judged (it is listed with the external links). A `<base>` tag, a
   development origin and a `file:` address are refused as on any page. A tree without the key is judged as before.
+
+  Dated note, 2026-11-25 (design-publish-preflight section 4, owner decision O-7 a, dev 1068; looser only): `head`'s duplicate-title
+  finding is not raised when EVERY page of the group is a piece's (`checker._piece_pages`, read from the source); the group is one
+  note naming the pages. One hand page in the group and the finding stands. A piece's title is its author's words.
 """
 
 import re
@@ -60,7 +64,12 @@ class PageMetaChecks(object):
                     if not have.get(prop):
                         self.r.add(fam, rel, "no %s meta" % prop)
         for title, rels in sorted(titles.items()):
-            if len(rels) > 1:
+            if len(rels) > 1 and all(r in self.pieces for r in rels):
+                # pieces carry the titles their author wrote, any title, in any language (O-7 a): a note, never a finding. ONE
+                # hand page in the group and the finding below stands.
+                self.r.notes.append("head: %d pieces are titled %r: %s (a piece's title is its author's words, so this is not "
+                                    "refused)" % (len(rels), title, ", ".join(rels)))
+            elif len(rels) > 1:
                 self.r.add(fam, rels[0], "the title %r is also used by %s" % (title, ", ".join(rels[1:])))
         self.r.count(fam, len(self.held_pages))
 

@@ -17,6 +17,7 @@ from configschema.configkeys import (
     V4_TOP_KEYS,
     V6_TOP_KEYS,
     V7_TOP_KEYS,
+    V10_TOP_KEYS,
     V9_TOP_KEYS,
     _DOMAIN_RE,
     _REPO_RE,
@@ -33,6 +34,8 @@ from configschema.sectioncheck import (
     needs_schema_6,
     needs_schema_7,
     needs_schema_9,
+    needs_schema_10,
+    v10_top_check,
     v6_top_check,
 )
 from configschema.valuecheck import (
@@ -79,6 +82,8 @@ class SiteConfig(object):
         self.sizeCopies = d.get("sizeCopies")
         self.carried = d.get("carried", [])
         self.references = d.get("references", {})
+        self.images = d.get("images", {})
+        self.sitemap = d.get("sitemap")
 
     def to_dict(self):
         """The config as a plain dict that `parse_data` reads back. A schema-2 key appears only when
@@ -119,6 +124,10 @@ class SiteConfig(object):
         if self.references:
             d["references"] = dict((k, dict((n, list(w)) for n, w in v.items()) if k == "unprinted" else list(v))
                                    for k, v in self.references.items())
+        if self.images:
+            d["images"] = dict(self.images)
+        if self.sitemap is not None:
+            d["sitemap"] = self.sitemap
         return d
 
     def effective_budgets(self):
@@ -194,9 +203,11 @@ def _check(data):
         return col.problems, None
     for k in data:
         if (k not in KEY_ORDER and k not in V2_TOP_KEYS and k not in V4_TOP_KEYS and k not in V6_TOP_KEYS
-                and k not in V7_TOP_KEYS and k not in V9_TOP_KEYS):
+                and k not in V7_TOP_KEYS and k not in V9_TOP_KEYS and k not in V10_TOP_KEYS):
             col.add("site.json: unknown key '%s'" % k, k, "unknown key", "one of: " + ", ".join(CANON_ORDER),
                     "remove '%s'" % k)
+        elif k in V10_TOP_KEYS and schema < 10:
+            col.problems.append(needs_schema_10(k, schema).problem)
         elif k in V9_TOP_KEYS and schema < 9:
             col.problems.append(needs_schema_9(k, schema).problem)
         elif k in V7_TOP_KEYS and schema < 7:
@@ -280,8 +291,10 @@ def _check(data):
             d["references"] = refs
     if schema >= 6:
         d.update(v6_top_check(data, col))
+    if schema >= 10:
+        d.update(v10_top_check(data, col))
     d["resume"] = _resume_check(data.get("resume"), col, schema)
-    d["budgets"] = _budgets_check(data.get("budgets", {}), col)
+    d["budgets"] = _budgets_check(data.get("budgets", {}), col, schema)
     if col.problems:
         return col.problems, None
     return [], d

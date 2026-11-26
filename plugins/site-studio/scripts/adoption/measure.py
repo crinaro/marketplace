@@ -15,7 +15,6 @@ import tempfile
 from building import outcomes, running  # noqa: E402
 from lookfiles import derive as look_mod  # noqa: E402
 import parity_classes  # noqa: E402
-from configschema import model  # noqa: E402
 
 from adoption.base import PARITY_RECORD_REL, PlanError, Refused, git, gitt
 from adoption.candidates import measured_names
@@ -25,7 +24,7 @@ from adoption.template import live_pdf_name
 from adoption.tokens import OLD_PAGES, detect_resume, old_pages_hint, token_files
 from adoption.spec import load_spec
 from adoption.tree import Tree, TreeFiles, inventory
-from adoption.convert import _give_resume_sidecar, _snapshot, converted_site_files
+from adoption.convert import _snapshot, converted_site_files
 from adoption.accounting import answers, is_workflow, no_landing_lines, open_folders
 from adoption.fileacct import pass_one, run_accounting, undecided_folders
 from adoption.parity import (
@@ -40,7 +39,7 @@ from adoption.plan import _plan_for, save_plan
 from adoption.problems import accept_problems, check_only, format_problems, look_lines, problem_dicts, problems_from_dicts
 from adoption.report import accept_lines, reference_lines
 from adoption.scoring import Output
-from adoption import carry, lookperson, lookwrite, readpropose, referencepropose
+from adoption import carry, lookperson, lookwrite, publishchecks, readpropose, referencepropose, resumeproof, settings10
 from adoption.usage import old_runner, prune
 
 SUGGEST_POINTER = ("look: %d of your look entries reproduce the old pages exactly; adopt.py suggest shows whether one could help "
@@ -287,7 +286,7 @@ def parity_json(res, plan):
             "differences": [list(d) for d in res.get("differences") or ()], "problems": list(res.get("problems") or ()),
             "notes": list(res.get("notes") or ()), "settings": (plan.get("settings") or {}),
             "accounting": list(acct.get("lines") or ()) if isinstance(acct, dict) else [], "p1": res.get("p1"),
-            "builds": res.get("builds")}
+            "builds": res.get("builds"), "publish": res.get("publish")}
 
 
 def _builder_failed(res, why, probs):
@@ -352,15 +351,16 @@ def _plugin_side(repo, base, scratch, tree, data, folders, kind, only, settings,
         os.makedirs(os.path.dirname(os.path.join(b_dir, rel)), exist_ok=True)
         with open(os.path.join(b_dir, rel), "wb") as fh:
             fh.write(blob)
-    cfg = model.parse_text(files["site/site.json"].decode("utf-8"))
-    if cfg.resume and cfg.resume.get("pdf") and os.path.isfile(os.path.join(b_dir, cfg.resume["pdf"])):
-        side = os.path.join(b_dir, cfg.resume["pdf"] + ".json")
-        if not os.path.exists(side):
-            sha = lambda p: hashlib.sha256(open(os.path.join(b_dir, p), "rb").read()).hexdigest()  # noqa: E731
-            with open(side, "w", encoding="utf-8") as fh:
-                json.dump({"source_sha256": sha(cfg.resume["path"]), "pdf_sha256": sha(cfg.resume["pdf"]),
-                           "text_sha256": "0" * 64}, fh)
-            res["notes"].append("the plugin side was given the resume PDF sidecar the examples never wrote")
+    seen = {"site/site.json": files["site/site.json"]}
+    src, pdf = resumeproof.resume_paths(seen)
+    for rel in (src, pdf, pdf and pdf + ".json"):                       # the resume source, its PDF and a sidecar already beside it, as they are in the fresh repo
+        if rel and os.path.isfile(os.path.join(b_dir, rel)):
+            with open(os.path.join(b_dir, rel), "rb") as fh:
+                seen[rel] = fh.read()
+    for rel, blob in resumeproof.stand_in(seen).items():                # the one stand-in: the build refuses a PDF with no sidecar, and parity compares pages
+        if rel not in seen:
+            with open(os.path.join(b_dir, rel), "wb") as fh:
+                fh.write(blob)
     git(b_dir, "add", "-A", "-f", ".", env=ident)
     git(b_dir, "commit", "-q", "-m", "adopt transform", "--allow-empty", env=ident)
     return b_dir, files, cnotes
@@ -384,9 +384,7 @@ def _choose_settings(tree, data, plan, local, folders, kind, chosen, disposition
     def snapshot(settings):
         f, n = converted_site_files(tree, data, None, folders, kind, only, settings=settings, dispositions=dispositions,
                                     persons=persons, hints=hints)
-        s2 = _snapshot(tree, TreeFiles(tree, f, n["removed"]))
-        _give_resume_sidecar(s2)
-        return s2
+        return resumeproof.stand_in(_snapshot(tree, TreeFiles(tree, f, n["removed"])))
 
     derived = {}                                     # the same settings are asked again by every pass: built (`counted`) and derived once each
     readings = {}                                    # a refined derive's look text (None: the last one) -> its `Derivation`
@@ -429,6 +427,7 @@ def _choose_settings(tree, data, plan, local, folders, kind, chosen, disposition
     picked.look_why = why
     kept = (picked.rows.get("look").value if picked.rows.get("look") is not None else None) or {}
     picked.derivation = readings.get(kept.get("file") if isinstance(kept, dict) else None, readings.get(None))
+    settings10.for_parity(picked, Row, local, snapshot, evaluate, plan.get("settings"))      # dev 1068: `images.sizes` and `sitemap`, READ from the old build, never measured
     layout = referencepropose.for_parity(picked.values(), local, snapshot, evaluate, plan.get("settings"))       # dev 1061, O-2: after the pass, before
     if layout is not None:                                         # the person's rows, so those (and the proposals below) measure over it
         picked.rows[referencepropose.NAME] = Row(referencepropose.NAME, layout.value, layout.how, layout.reason)
@@ -738,6 +737,7 @@ def cmd_parity(repo, accept=False, keep=None, shots_dir=None, as_json=False):
         print("  " + line)
     for line in reference_lines(tree, data, plan):             # dev 1061: every word the layout would write, whatever the verdict
         print(line)
+    res["publish"] = publishchecks.after_parity(repo, tree, data, plan, print)    # dev 1068: the list `check` prints, over the one converted tree
     p1 = res.get("p1")
     if p1:
         print("P1 (does the conversion change what your own builder publishes?): %s%s"

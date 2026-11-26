@@ -111,7 +111,9 @@ CONSTRUCTS = {
     "card": {"first": "0.3.1", "parts": {
         "wrap": {"url": URL, "image": HTML, "title": TEXT, "teaser": HTML, "meta": HTML, "number": HTML,
             "kicker": HTML, "fullTitle": TEXT, "position": HTML},
-        "teaser": {"text": TEXT}, "meta": {"text": TEXT}, "number": {"n": INT, "text": TEXT}}},
+        "teaser": {"text": TEXT}, "meta": {"text": TEXT}, "number": {"n": INT, "text": TEXT},
+        # 0.10.0 (design-publish-preflight section 5.2): the card's own picture part, a per-place part (`PLACE_PARTS`)
+        "image": PLACE_IMAGE_SLOTS}},
     "cards": {"first": "0.3.1", "parts": {"wrap": {"items": HTML, "group": TEXT}}},
     "group": {"first": "0.3.1", "parts": {"wrap": {"title": TEXT, "cards": HTML, "count": HTML, "group": TEXT}}},
     "portfolio": {"first": "0.3.1", "parts": {
@@ -206,6 +208,8 @@ PART_FIRST = {
     ("reference-card", "kind-article"): "0.8.0", ("reference-card", "kind-video"): "0.8.0",
     # 0.9.0 (design-reference-layout section 1.4): the type and channel parts. Both optional: no default entry, so no tree's bytes move.
     ("reference-card", "type"): "0.9.0", ("reference-card", "channel"): "0.9.0",
+    # 0.10.0 (design-publish-preflight section 5.2, dev 1068): the card's own picture part. Optional: no default entry, so no tree's bytes move.
+    ("card", "image"): "0.10.0",
 }
 
 # A place part (design-adopt-parity-2 section 4.8; it generalises 0.5.0's `lookfiles/renderlog.py` `PLACE_PICTURES`):
@@ -219,6 +223,9 @@ PLACE_PARTS = {
     ("home-showcase", "image"): ("image", "sized-set-pos"),
     ("feed", "item"): ("reference-card", "wrap"),
     ("home-samples", "item"): ("reference-card", "wrap"),
+    # 0.10.0 (design-publish-preflight section 5.2): `card.image`, the picture of a grid, featured or home card, with its own `sizes`.
+    # Derive does NOT read it (`lookfiles.places.DERIVED_PLACES`): a derived look is what it was.
+    ("card", "image"): ("image", "sized-set-pos"),
 }
 
 # Rule L3a (design-movement-view section 4.3; OURS, amends 0.4.0 L3): a slot added to a part that already existed,
@@ -300,7 +307,7 @@ OPTIONAL_PARTS = frozenset((("steps-view", "role-sep"), ("steps-view", "image"),
                             ("tiles", "item-accent"), ("reference-card", "used-by"), ("reference-card", "author"),
                             ("reference-card", "kind-page"), ("reference-card", "kind-article"),
                             ("reference-card", "kind-video"), ("reference-card", "type"),
-                            ("reference-card", "channel")))
+                            ("reference-card", "channel"), ("card", "image")))
 # Parts that are literal text and nothing else (no slot: the table gives none; no element: `looks.check_part`).
 TEXT_ONLY_PARTS = frozenset((("steps-view", "role-sep"), ("reference-card", "kind-page"),
                              ("reference-card", "kind-article"), ("reference-card", "kind-video")))

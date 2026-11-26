@@ -1,4 +1,4 @@
-"""treeschema: which schema a site needs. The schema-2, 3, 4, 5, 6, 7, 8 and 9 reasons a tree can hold, `required_schema` (the one
+"""treeschema: which schema a site needs. The schema-2, 3, 4, 5, 6, 7, 8, 9 and 10 reasons a tree can hold, `required_schema` (the one
 place that says), `tree_schema_problems` and `check_tree_schema` (the build's refusal of a file whose schema is
 below what its tree needs) and `kind_conflicts`. K reasons are keys older plugins refused; I reasons are new
 readings of text they accepted (see the `siteconfig.py` docstring)."""
@@ -31,6 +31,9 @@ from configschema.configkeys import (
     V9_BLOCKS_KEYS,
     V9_REFERENCE_KEYS,
     V9_TOP_KEYS,
+    V10_BUDGET_KEYS,
+    V10_TOP_KEYS,
+    V10_WORK_KEYS,
 )
 from configschema.diagnostics import SiteConfigError, make_problem
 from configschema.frontmatter import (
@@ -467,6 +470,46 @@ def schema_9_reasons(cfg, files=None, look_needs=None):
     return out
 
 
+_EFFECT_LOOK10 = "site-studio 0.9 would refuse the look as unknown"
+_EFFECT_K10 = "site-studio 0.9 would refuse the key as unknown"
+NEEDS_0100 = "0.10.0"
+
+
+def schema_10_reasons(cfg, files=None, look_needs=None):
+    """Every reason this site needs schema 10 (design-publish-preflight section 8; dev 1068), as [Reason(..., "K")]: a key or part
+    0.9.0 refuses, so no tree 0.9.0 accepted holds one and raising a tree from 9 to 10 changes no output. The rows: the top-level
+    keys `images` and `sitemap` (`V10_TOP_KEYS`; a parsed config holds `images` only when it is not `{}`), `budgets.lazyImagesMaxMB`
+    (`V10_BUDGET_KEYS`), the portfolio setting `blankMeta` (`V10_WORK_KEYS`) in `site.json` `work` or a `page.md`, and a look the
+    build READS that needs 0.10.0 (the file `look` names and the file `lookLocal` names, and no other, as `schema_9_reasons`: it
+    writes the part `card.image`). `files` and `look_needs` as `schema_9_reasons`."""
+    if files is not None and look_needs is None:
+        raise ValueError("schema_10_reasons(cfg, files) needs look_needs= ({site/looks/<name>.json: release}, from "
+                         "building.lookneeds.look_needs(files)); pass {} only when you know the tree holds no look")
+    out = []
+    here = "site/site.json"
+    for k in V10_TOP_KEYS:
+        if k in cfg.to_dict():
+            out.append(Reason(here, "sets %s" % k, _EFFECT_K10, None, "K"))
+    for k in V10_BUDGET_KEYS:
+        if k in cfg.budgets:
+            out.append(Reason(here, "sets budgets.%s" % k, _EFFECT_K10, None, "K"))
+    for k in V10_WORK_KEYS:
+        if k in cfg.work:
+            out.append(Reason(here, "sets work.%s" % k, _EFFECT_K10, None, "K"))
+    for path in sorted(files or ()):
+        parts = path.split("/")
+        if path.startswith("content/") and path.endswith("/page.md") and len(parts) == 3:
+            for key, _val, n in front_matter_pairs(files[path]):
+                if key in V10_WORK_KEYS:
+                    out.append(Reason(path, "sets %s" % key, _EFFECT_K10, n, "K"))
+    read = set(p for p in (getattr(cfg, "look", None), getattr(cfg, "lookLocal", None)) if isinstance(p, str))
+    for path in sorted(look_needs or {}):
+        if (look_needs[path] == NEEDS_0100 and path in read and _LOOK_PATH_RE.match(path)
+                and (files is None or path in files)):
+            out.append(Reason(path, "is a look that needs site-studio 0.10.0", _EFFECT_LOOK10, None, "K"))
+    return out
+
+
 def _looks_read(files, look_needs):
     """`look_needs` as given, else {}. Given `files` and no `look_needs`, {} means the looks are NOT scanned (called
     directly, `schema_5_reasons` refuses `files` without it; through here it is not refused). Since 0.5.0 a look can
@@ -477,7 +520,8 @@ def _looks_read(files, look_needs):
 
 
 def required_schema(cfg, files=None, interpretations=None, look_needs=None):
-    """The lowest schema that holds the site: 9 when any schema-9 reason holds (`schema_9_reasons`, design-reference-layout
+    """The lowest schema that holds the site: 10 when any schema-10 reason holds (`schema_10_reasons`, design-publish-preflight
+    section 8), 9 when any schema-9 reason holds (`schema_9_reasons`, design-reference-layout
     section 5), 8 when any schema-8 reason holds (`schema_8_reasons`, design-adopt-local-reach
     section 2.1), 7 when any schema-7 reason holds (`schema_7_reasons`), 6 when any schema-6 reason holds (`schema_6_reasons`, a section 3.2 row
     of design-adopt-parity-2), 5 when any schema-5 reason holds (`schema_5_reasons`, and only a
@@ -491,6 +535,8 @@ def required_schema(cfg, files=None, interpretations=None, look_needs=None):
     if files is not None and interpretations is None:
         raise ValueError("required_schema(cfg, files) needs interpretations= (content.interpretation_reasons"
                          "(files)); pass [] only when you know the tree holds none")
+    if schema_10_reasons(cfg, files, _looks_read(files, look_needs)):
+        return 10
     if schema_9_reasons(cfg, files, _looks_read(files, look_needs)):
         return 9
     if schema_8_reasons(cfg, files, _looks_read(files, look_needs)):
@@ -573,6 +619,13 @@ def tree_schema_problems(cfg, files, look_needs=None):
                                     "raise-schema --to 9`)" % (at, r.what), r.where, "schema %d" % cfg.schema,
                                     "schema 9", "run `python3 build.py raise-schema --to 9`, which lists what "
                                     "the page changes before it writes schema 9", False, r.lineno))
+    if cfg.schema < 10:
+        for r in schema_10_reasons(cfg, files, _looks_read(files, look_needs)):
+            at = "%s:%d:" % (r.where, r.lineno) if r.lineno else r.where
+            out.append(make_problem("%s %s, which needs \"schema\": 10 in site/site.json (run `build.py "
+                                    "raise-schema --to 10`)" % (at, r.what), r.where, "schema %d" % cfg.schema,
+                                    "schema 10", "run `python3 build.py raise-schema --to 10`, which lists what "
+                                    "the page changes before it writes schema 10", False, r.lineno))
     return out
 
 

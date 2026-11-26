@@ -146,6 +146,29 @@ Adopt works in two stages, and it tells you which one it is in.
 - **From 0.9.0, an unlisted Vimeo link can play.** By default the build leaves an unlisted video's private code out of the
   player, so the video shows Vimeo's own notice. Where your old pages carried the code, adopt can turn on
   `"blocks": {"unlistedVideos": true}`; that puts the code in the page, where any visitor can read it, so Claude says so first.
+- **From 0.10.0, what the publish would refuse is said before `apply`, with who can fix it.** `check`, `inventory`, `parity`,
+  `apply --dry-run` and `apply` ask the same publish checks of the same converted site and print one list, grouped as what adopt
+  fixes, what the site's own pages need, what only you can do, and what only the plugin can (that last is filed upstream; the
+  others never are). After a `parity`, `check` exits 1 with "can be converted, but the publish would refuse it" while that list is
+  not empty. `adopt.py check --online` also reads your public repository, its Pages settings and its published addresses (it needs
+  `gh`, logged in, and the network, and changes nothing), and lists what `apply` can still stop on. A check that could not run
+  is shown as not checked, never as passed.
+- **From 0.10.0, your resume PDF is proved by adopt.** Where the plugin's reader finds at least 95% of your resume page's words in
+  your existing PDF, `apply` writes the proof beside it and the PDF does not change. Where it finds less (the reader can be wrong
+  about joined letters, hyphenation and languages written without spaces), `adopt.py proof --as-is` is your word that the PDF is
+  right (the privacy review then opens it), and `adopt.py proof --print` prints a new one with Chrome (visitors then get a
+  different file). A privacy review applies until 00:00 UTC of its day: run `apply` again before then, or the review is made again.
+- **From 0.10.0, three more settings, none changing a published page unless its owner sets the key.** `images.sizes`: where your old
+  pages' pictures had no size, adopt leaves them as they were (`as-written`) and the publish check stops asking for sizes; `held`
+  adds sizes to generated pages with one small extra stylesheet and is only ever your choice (its costs: one more file, and an
+  older browser, from before about 2022, or a missing file gets the plain layout; parity reads it as a difference you accept,
+  and it needs a privacy review). `sitemap: indexable` leaves redirect and `noindex` pages out of `sitemap.xml`, set when your old
+  sitemap did not list them. `blankMeta: "omit"` prints no row or card separator for a front matter line with no value, set when
+  your old site showed none. The publish check also counts the pictures that load only as a visitor scrolls apart, up to
+  `budgets.lazyImagesMaxMB` (20 MB by default, never below `pageImagesMaxMB`), and tells, rather than refuses, pieces that share a
+  title (including "Untitled"); a hand-written page with no title is still refused.
+- **From 0.10.0, a residual unit of an old file can be answered "the plugin covers this; drop it"** (`adopt.py unit <path> <id>
+  covered`, or `unit <path> --rest covered` for the rest). The words stay in `archive/`, and the commit lists each one.
 - Your content stays. Nothing is deleted: what is no longer needed moves into an `archive/` folder.
 - A standing rule in one of your own agent files can be carried into your `CLAUDE.md` under
   "Standing rules carried by adopt". Files under `.claude/rules/` also reach the plugin's agents
@@ -192,6 +215,9 @@ ask, `apply` is refused and Claude leaves a note in `HANDOFF.md` saying what to 
 - **That a site adopted with 0.9.0 opens in an older copy of site-studio** when it has references (the suggested
   layout) or an unlisted video turned on: both make the site settings version 9, and a copy older than 0.9.0 says
   "update site-studio" and changes nothing.
+- **That a site adopted with 0.10.0 opens in an older copy of site-studio** when adopt set `images.sizes`, `sitemap` or
+  `blankMeta`: each makes the site settings version 10, and a copy older than 0.10.0 says "update site-studio" and changes nothing.
+  So does adopt's own working file when it holds an answer new in 0.10.0.
 - **That it can reproduce every part of a template's markup.** In this version, on the example
   template, the part of adopt that works out a site's markup from its old pages handles every part
   it was tested on. A real site may have parts it cannot work out; adopt then keeps site-studio's

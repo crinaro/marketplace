@@ -569,10 +569,14 @@ def group_occurrences(occurrences):
     return out
 
 
-def merge_causes(previous, causes, installed):
+def merge_causes(previous, causes, installed, resolve_unseen=True):
     """The record after a run (`apply`, `remeasure`): one row per PLUGIN cause. A cause seen before keeps its state,
     issue and `raisedIn`, its count and rows refreshed; a `declined` cause comes back `pending` only on a newer
-    plugin version; a `resolved` one that reappears is `pending` again; a cause that has gone is `resolved`."""
+    plugin version; a `resolved` one that reappears is `pending` again; a cause that has gone is `resolved`.
+
+    `resolve_unseen` is true only for a caller that MEASURED the site (`apply`, `remeasure`): a cause absent from a fresh assessment is gone, and `resolved` says so (a row changes
+    state when the person answered it, or when a run that could see its cause measured it gone, and not otherwise; dev 1068, 0.10.0 review R3). `report` measures nothing: it
+    is shown only the pending rows, so a recorded row it was not given (`filed`, `declined`, `upgrade`, one not offered) was not seen going anywhere and passes through unchanged."""
     prev = dict((r["id"], r) for r in previous)
     out, seen = [], set()
     for c in causes:
@@ -594,7 +598,7 @@ def merge_causes(previous, causes, installed):
     for cid, old in prev.items():
         if cid not in seen:
             row = dict(old)
-            if old["state"] != "resolved":
+            if resolve_unseen and old["state"] != "resolved":
                 row.update(state="resolved", resolvedIn=installed, fixedIn=old["fixedIn"])
             out.append(row)
     return sorted(out, key=lambda r: r["id"])
@@ -655,7 +659,7 @@ def report(causes, prov, terms=(), file=False, previous=(), repo=None, runner=No
             out.write("not filed (%s cause): %s\n" % (kind, c["id"]))
         else:
             plugin_causes.append(c)
-    rows = merge_causes(previous, plugin_causes, installed)
+    rows = merge_causes(previous, plugin_causes, installed, resolve_unseen=False)       # `report` measures nothing: a row it was not shown is not one it saw resolved
     built = []
     for c in plugin_causes:
         title, body = build_report(c, prov)

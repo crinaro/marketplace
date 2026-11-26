@@ -1,4 +1,4 @@
-"""configkeys: the key tables and constants of `site/site.json` and of a page's front matter, schemas 1 to 9.
+"""configkeys: the key tables and constants of `site/site.json` and of a page's front matter, schemas 1 to 10.
 
 Constants only: the schema ceiling, the engine marker, each key table, the budget defaults and the patterns the
 value checks use. No code runs here."""
@@ -6,7 +6,7 @@ value checks use. No code runs here."""
 import re
 
 
-SCHEMA_MAX = 9
+SCHEMA_MAX = 10
 ENGINE_MARKER = "site-studio"
 CANONICAL_MARKER_LINE = '  "engine": "site-studio",'
 
@@ -20,7 +20,7 @@ V2_TOP_KEYS = ("siteKind", "featuredFrom")
 CANON_ORDER = (
     "schema", "engine", "name", "siteTitle", "titleSeparator", "siteKind", "publicRepo", "previewUrl", "domain",
     "cutover", "publicEmails", "privateTerms", "work", "featuredFrom", "featuredView", "nav", "look", "lookLocal",
-    "blocks", "references", "mediaPaths", "sizeCopies", "carried", "redirects", "resume", "budgets",
+    "blocks", "references", "mediaPaths", "sizeCopies", "carried", "images", "sitemap", "redirects", "resume", "budgets",
 )
 # Schema 4 adds these top-level keys (design-template-fidelity section 3.2), refused below 4.
 V4_TOP_KEYS = ("nav", "look", "blocks")
@@ -35,6 +35,13 @@ V7_TOP_KEYS = ("lookLocal",)
 # `references` holds the site's own vocabularies for a reference's `type` and `channel` (`REFERENCES_KEYS`); `{}` is the default
 # and is written away.
 V9_TOP_KEYS = ("references",)
+# Schema 10 adds two top-level keys (design-publish-preflight sections 3.2, 7 and 8; dev 1068), each a K reason: 0.9.0 refuses them as
+# unknown keys. `images` is an object whose one key is `sizes` (`IMAGES_KEYS`; "as-written" or "held", `IMAGES_SIZES`); `sitemap` takes the one
+# value "indexable" (`SITEMAP_VALUES`). An absent key, and `images: {}`, are the default (0.9.0's bytes) and are written away.
+V10_TOP_KEYS = ("images", "sitemap")
+IMAGES_KEYS = ("sizes",)
+IMAGES_SIZES = ("as-written", "held")
+SITEMAP_VALUES = ("indexable",)
 LOOK_LOCAL_PATH = "site/looks/local.json"
 # design-adopt-ownership-line 2.5, 2.6 and 3.1: the look derive writes, its stamp (committed with it, never read by a build) and
 # adopt's two scratch files, which are never committed and are never a dirty path at the three dirty tests (parity's
@@ -76,7 +83,7 @@ SITE_KINDS = ("portfolio", "hub", "custom")
 FEATURED_FROM = ("home", "flags")
 WORK_KEYS = ("label", "description", "required", "meta", "cardMeta", "groupBy", "groups", "labels",
              "cardNumber", "cardNumberFormat", "cardLabels", "backLink",
-             "cardImage", "cardAlt", "cardKicker", "pieceLink", "pieceTeaser", "groupCount", "pieceRoles")
+             "cardImage", "cardAlt", "cardKicker", "pieceLink", "pieceTeaser", "groupCount", "pieceRoles", "blankMeta")
 # The portfolio keys schema 4 adds (the last four of WORK_KEYS). Each is stored in a parsed `work` ONLY when it is
 # not its default (cardNumber false, cardNumberFormat "padded", cardLabels true, no backLink), the way `labels` is,
 # so a schema-3 site's settings stay what they were and `content.py`'s merge of site.json `work` with a page.md
@@ -100,6 +107,11 @@ CARD_IMAGES = ("cover", "photo")
 # (a card picture's alt is the piece's title), and a `labels` part, `counts` (`V6_LABEL_PARTS`).
 V6_WORK_KEYS = ("groupCount", "pieceRoles")
 CARD_ALT_TITLE = "title"
+# The portfolio setting schema 10 adds (design-publish-preflight section 6, owner decision O-4 a; dev 1068; the last of WORK_KEYS), a K trigger:
+# `blankMeta`, whose one value "omit" drops a blank listed key from a piece's meta rows and a card's meta line. Stored in a parsed `work`
+# only when set, so a schema-9 settings dict is what it was; absent is 0.9.0's reading (a blank value prints an empty row).
+V10_WORK_KEYS = ("blankMeta",)
+BLANK_META_VALUES = ("omit",)
 # `blocks` (schema 4, a top-level object): the settings of the plugin's `:::` blocks and of the `ref:` lines a body holds. Its
 # keys are `headingLevel` (the h-level of a heading inside a block), `loneReferenceGrid` (a lone `ref:` line prints inside
 # the reference grid, as two or more do; the default, false, is a bare card) and `videoEmbed` (the address a video block and a gallery
@@ -168,6 +180,12 @@ BUDGET_DEFAULTS = {
     "pageImagesMaxMB": 5,     # all images per page, at 2x
     "treeMaxMB": 200,         # whole published tree (the Pages limit is 1 GB)
 }
+# Schema 10 (design-publish-preflight section 5.1, owner decision O-6 a; dev 1068): `budgets.lazyImagesMaxMB`, the weight of one page's
+# lazy-loading pictures, counted apart from the pictures that load first. A K reason: 0.9.0 refuses the key as unknown. It is NOT in
+# BUDGET_DEFAULTS, so `effective_budgets()` of a site that does not set it is what it was; the gate (S2) reads the default below, and never
+# less than the site's effective `pageImagesMaxMB`. A finite number above zero.
+V10_BUDGET_KEYS = ("lazyImagesMaxMB",)
+LAZY_IMAGES_MAX_MB_DEFAULT = 20
 
 DEFAULT_RESUME_PATH = "content/resume/resume.md"
 DEFAULT_RESUME_PDF = "content/resume/resume.pdf"

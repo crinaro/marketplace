@@ -28,8 +28,9 @@ from building import running  # noqa: E402
 
 from adoption.accounting import KEPT_ROOT_FILES, account, address_of, counts, piece_folder_of, plan_choices, wholly_archived
 from adoption.base import Refused
+from adoption import resumeproof
 from adoption.dispose import conv_name
-from adoption.convert import _give_resume_sidecar, _snapshot, converted_site_files, holds_markdown, pageless_folders
+from adoption.convert import _snapshot, converted_site_files, holds_markdown, pageless_folders
 from adoption.parity import compare_builds
 from adoption.problems import check_only
 from adoption.served import (UNUSED_WHY, crash_reading, is_content_unit, old_texts, run_free_use, stamp_why, template_stamp,
@@ -53,8 +54,7 @@ def pass_one(tree, data, plan, chosen=(), settings=None, hints=None):
     files, notes = converted_site_files(tree, data, plan["paper"], folders, plan.get("siteKind"), only,
                                         settings=settings, hints=hints)
     seen = TreeFiles(tree, files, notes["removed"])
-    snap = _snapshot(tree, seen)
-    _give_resume_sidecar(snap)
+    snap = resumeproof.stand_in(_snapshot(tree, seen))
     drafted = []
     for _attempt in range(2):
         try:

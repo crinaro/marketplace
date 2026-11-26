@@ -50,7 +50,7 @@ from pdfreading import reader, wordcoverage    # noqa: E402
 import preview    # noqa: E402
 from configschema import diagnostics, model  # noqa: E402
 
-COVERAGE_NEEDED = 0.95      # design 7.1 rule 2; check_site.py's bound
+COVERAGE_NEEDED = wordcoverage.NEEDED    # design 7.1 rule 2: the one object the gate reads too (dev 1068, design-publish-preflight 2.2)
 RESUME_PAGE = "resume/index.html"
 PRINT_STYLE = ("*,*::before,*::after{font-kerning:none !important;font-variant-ligatures:none !important;"
                "text-rendering:optimizeSpeed !important}")
@@ -70,7 +70,20 @@ def page_main_text(out_dir):
     path = os.path.join(out_dir, *RESUME_PAGE.split("/"))
     with open(path, "r", encoding="utf-8") as fh:
         page = page_mod.parse_page(RESUME_PAGE, fh.read())
-    return " ".join(page.main_text)
+    return page_mod.main_words(page)
+
+
+def judge_read(main_text, read):
+    """The coverage of a PDF's decoded text against the built page's words, or ResumeError when the gate would call the PDF NOT
+    READ (rule 2). The bound is `wordcoverage.NEEDED`, read at the call. Split out so the bound is testable without a browser."""
+    cov = wordcoverage.word_coverage(main_text, read.text) if read.status == "read" else None
+    if read.status != "read" or not wordcoverage.meets(cov):
+        raise ResumeError(
+            "the printed PDF would not pass the privacy gate (rule 2): %s; nothing was written" % (
+                "; ".join(read.reasons) if read.status != "read" else
+                "its text covers %s of the resume page's words (needs %d%%)" % (
+                    "none" if cov is None else "%d%%" % int(cov * 100), int(wordcoverage.NEEDED * 100))))
+    return cov
 
 
 def print_pdf(url, paper):
@@ -112,13 +125,7 @@ def make_resume_pdf(repo, log=print, quiet=False):
     if not wordcoverage.words(main_text):
         raise ResumeError("the built resume page has no text, so a PDF of it could never be checked; add the resume text to the page, then run /site-studio:resume again")
     read = reader.read_pdf(pdf)
-    cov = wordcoverage.word_coverage(main_text, read.text) if read.status == "read" else None
-    if read.status != "read" or cov is None or cov < COVERAGE_NEEDED:
-        raise ResumeError(
-            "the printed PDF would not pass the privacy gate (rule 2): %s; nothing was written" % (
-                "; ".join(read.reasons) if read.status != "read" else
-                "its text covers %s of the resume page's words (needs 95%%)" % (
-                    "none" if cov is None else "%d%%" % int(cov * 100))))
+    cov = judge_read(main_text, read)
     sidecar = {"pdf_sha256": sha256_hex(pdf), "source_sha256": sha256_hex(source_bytes),
                "text_sha256": sha256_hex(wordcoverage.normalise_text(main_text).encode("utf-8"))}
     os.makedirs(os.path.dirname(pdf_path), exist_ok=True)
@@ -136,8 +143,8 @@ def make_resume_pdf(repo, log=print, quiet=False):
     log("source_sha256: %s (%s)" % (sidecar["source_sha256"], res["path"]))
     log("pdf_sha256: %s" % sidecar["pdf_sha256"])
     log("text_sha256: %s" % sidecar["text_sha256"])
-    log("text: %d words in the resume page's <main>; the PDF decodes to %d%% of them (the gate needs 95%%)" % (
-        len(wordcoverage.words(main_text)), int(cov * 100)))
+    log("text: %d words in the resume page's <main>; the PDF decodes to %d%% of them (the gate needs %d%%)" % (
+        len(wordcoverage.words(main_text)), int(cov * 100), int(COVERAGE_NEEDED * 100)))
     if dirty:
         log("note: %s has uncommitted changes; commit it, then the publish build (which reads the commit) "
             "will match this PDF" % res["path"])

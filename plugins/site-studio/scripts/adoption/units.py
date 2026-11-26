@@ -11,6 +11,13 @@ _LIST = re.compile(r"^\s*(?:[-*+]|\d+[.)])\s+")
 _HEAD = re.compile(r"^\s{0,3}#{1,6}\s")
 
 
+def first_line(text, width=100):
+    """The first non-blank line of a unit, cut at `width` with "..." when it is longer: how a unit is named to the person (the `--rest` print,
+    the commit's "Covered by the plugin (dropped)" list), so a dropped unit is told by its own words and never only by its id (dev 1068)."""
+    line = next((l.strip() for l in text.split("\n") if l.strip()), "")
+    return line if len(line) <= width else line[:width - 3].rstrip() + "..."
+
+
 def md_units(text):
     """Paragraphs and list items of a Markdown file; headings, comments, front matter, blanks excluded."""
     text = _FM.sub("", text.replace("\r\n", "\n"), count=1)

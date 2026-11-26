@@ -18,7 +18,9 @@ from configschema.configkeys import (
     RESUME_KEYS,
     RESUME_LAYOUTS,
     RESUME_TITLE_FORMS,
+    BLANK_META_VALUES,
     SCHEMA_MAX,
+    V10_WORK_KEYS,
     V4_WORK_KEYS,
     V5_WORK_KEYS,
     V6_LABEL_PARTS,
@@ -28,7 +30,7 @@ from configschema.configkeys import (
     _KEY_RE,
 )
 from configschema.diagnostics import SiteConfigError, _Collector
-from configschema.sectioncheck import needs_schema_6, needs_schema_8
+from configschema.sectioncheck import needs_schema_6, needs_schema_8, needs_schema_10
 from configschema.valuecheck import (
     _bad,
     _bool,
@@ -239,6 +241,23 @@ def _v6_settings(raw, where, schema, out, col):
             out[k] = True
 
 
+def _v10_settings(raw, where, schema, out, col):
+    """The schema-10 portfolio setting (design-publish-preflight section 6, owner decision O-4 a; dev 1068), stored only when set:
+    `blankMeta`, whose one value is "omit". Below 10 it is refused naming the schema (0.9.0 refuses it as an unknown key)."""
+    for k in V10_WORK_KEYS:
+        if k not in raw:
+            continue
+        here = "%s.%s" % (where, k)
+        if schema < 10:
+            col.problems.append(needs_schema_10(here, schema).problem)
+        elif raw[k] not in BLANK_META_VALUES:
+            names = " or ".join('"%s"' % a for a in BLANK_META_VALUES)
+            col.add("site.json: '%s' must be %s" % (here, names), here, _shown(repr(raw[k])), names,
+                    "set %s to %s, or remove it" % (here, names))
+        else:
+            out[k] = raw[k]
+
+
 def _portfolio_check(raw, where, schema, featured_from, col):
     out = {"label": "Work", "description": "", "required": ["title"], "meta": [], "cardMeta": [],
            "groupBy": None, "groups": [], "labels": {"meta": {}, "groups": {}}}
@@ -288,6 +307,7 @@ def _portfolio_check(raw, where, schema, featured_from, col):
                 out[k] = val
     _v5_settings(raw, where, schema, out, col)
     _v6_settings(raw, where, schema, out, col)
+    _v10_settings(raw, where, schema, out, col)
     if "groupBy" in raw:
         ok, val = col.run(_str, raw["groupBy"], where + ".groupBy", optional=True)
         if ok:

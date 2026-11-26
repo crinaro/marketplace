@@ -6,19 +6,20 @@ resolver and `run`, which calls the families in order and then fails any family 
 nothing (a green run is never an empty one). `not_read_pdfs` is the seam review_record.py's
 coverage packet reads. Since 0.6.0 it also holds the carried set (`carried`, `held_pages`:
 `sitechecks/carriedpages.py`, design-adopt-parity-2 section 4.7.2), and `run` prints the `carried:`
-note when the tree holds a carried page.
+note when the tree holds a carried page. Since 0.10.0 it also holds `pieces` (`_piece_pages`: the pages that are a piece's, read from
+`content/<portfolio>/<slug>/index.md` in the repo it is given; design-publish-preflight section 4, dev 1068).
 """
 
 import os
 import posixpath
-from configschema import model
+from configschema import frontmatter, model
 from urllib.parse import unquote, urlsplit
 from sitechecks import carriedpages
 from sitechecks.budgets import BudgetChecks
 from sitechecks.contentchecks import ContentChecks
 from sitechecks.domain import DomainChecks
 from sitechecks.linking import LinkChecks
-from sitechecks.page import parse_page
+from sitechecks.page import parse_page, search_out
 from sitechecks.pagemeta import PageMetaChecks
 from sitechecks.privacy import PrivacyChecks
 from sitechecks.report import FAMILIES, Report
@@ -47,6 +48,11 @@ class Checker(StructureChecks, LinkChecks, DomainChecks, ContentChecks, BudgetCh
         # it holds them to; `held_pages` are the content pages held to the plugin's own page form.
         self.carried = carriedpages.carried_in(cfg, tree.files)
         self.held_pages = [r for r in self.content_pages if r not in self.carried]
+        # `site.json` `sitemap: "indexable"` (schema 10; design-publish-preflight section 7, dev 1068): the content pages the build leaves out of
+        # the sitemap because a `robots` meta holds noindex or none (`page.search_out`, the build's own function). Empty without the key.
+        self.left_out = set(r for r in self.content_pages if getattr(cfg, "sitemap", None) == "indexable"
+                            and search_out(self.pages[r]) == "noindex")
+        self.pieces = self._piece_pages()
         self.refs_by_page = {}
         self.referenced = set()
         self.flagged = set()      # files `structure` already refused: not reported again as orphans
@@ -55,6 +61,33 @@ class Checker(StructureChecks, LinkChecks, DomainChecks, ContentChecks, BudgetCh
     @staticmethod
     def _is_redirect(p):
         return any(m.get("http-equiv", "").lower() == "refresh" for m in p.metas)
+
+    def _piece_pages(self):
+        """{page: the piece's own title} for the pages that are a PIECE's (design-publish-preflight section 4, T1; dev 1068): the page is
+        `<portfolio>/<slug>/index.html`, `content/<portfolio>/<slug>/index.md` exists in the repo the gate is given with a front matter
+        `title`, and the page's `<title>` begins with that title (the parsed `<title>` is already unescaped, so the compare is of the
+        text the build escaped). A title is the person's words, so two pieces may share one and a piece may be called "Untitled"
+        (`contentchecks.unfinished`, `pagemeta.head`). Read from the SOURCE, never from the page's markup, because the gate cannot
+        tell a generated page from a hand-written one: with no repo, on a `hub` or `custom` site (whose `site/src` is built as written,
+        so no `content/` page is generated), or for a page whose source says nothing, NOTHING is exempt (a missing fact reads as a
+        refusal, never as a pass)."""
+        if not self.repo or getattr(self.cfg, "siteKind", "portfolio") != "portfolio":
+            return {}
+        out = {}
+        for rel in self.held_pages:
+            parts = rel.split("/")
+            if len(parts) != 3 or parts[2] != "index.html":
+                continue
+            try:
+                with open(os.path.join(self.repo, "content", parts[0], parts[1], "index.md"), "r", encoding="utf-8",
+                          errors="replace") as fh:
+                    pairs = frontmatter.front_matter_pairs(fh.read())
+            except OSError:
+                continue
+            title = dict((k, v) for k, v, _n in pairs).get("title")
+            if title and title.strip() and self.pages[rel].title.strip().startswith(title.strip()):
+                out[rel] = title.strip()
+        return out
 
     def site_path(self):
         if not self.base:

@@ -2,7 +2,7 @@
 
 <!-- GENERATED from the tables in scripts/content.py, scripts/siteconfig.py and scripts/build.py. Do not edit by hand: the plugin's maintainers regenerate it, and their tests fail when it and the code disagree. -->
 
-What your site's files may hold, and what the build reads. This page is written from the build's own tables, so it names exactly the keys, tokens, blocks and settings this version knows. Where this page and the build disagree, the build is right, and that is a bug in the plugin to report. A site is schema 1, 2, 3, 4, 5, 6, 7, 8 or 9 (this version reads up to 9); the plugin writes the lowest schema that holds your site, and nothing here changes a site that does not use it.
+What your site's files may hold, and what the build reads. This page is written from the build's own tables, so it names exactly the keys, tokens, blocks and settings this version knows. Where this page and the build disagree, the build is right, and that is a bug in the plugin to report. A site is schema 1, 2, 3, 4, 5, 6, 7, 8, 9 or 10 (this version reads up to 10); the plugin writes the lowest schema that holds your site, and nothing here changes a site that does not use it.
 
 ## Where things live
 
@@ -26,7 +26,7 @@ Top-level keys, in the order the plugin writes them. A key marked schema 2 makes
 
 | key | schema | meaning |
 | --- | --- | --- |
-| `schema` | 1 | which reading of the tree this site uses (1 to 9); the plugin writes the lowest one that holds the site. |
+| `schema` | 1 | which reading of the tree this site uses (1 to 10); the plugin writes the lowest one that holds the site. |
 | `engine` | 1 | the marker that says this file is site-studio's; written for you. |
 | `name` | 1 | your name, as printed on the site. |
 | `siteTitle` | 1 | the site's title, used in page titles. |
@@ -49,6 +49,8 @@ Top-level keys, in the order the plugin writes them. A key marked schema 2 makes
 | `mediaPaths` | 6 | where a folder's media is published (schema 6): an object with any of `references`, `home` and `about`, each a pattern of two to four `/`-separated lower-case names, the last `{file}`, such as `refs/{name}/{file}` (`references` holds `{name}` once) or `media/{file}`. |
 | `sizeCopies` | 6 | `any-format` (schema 6): a size copy may have another raster extension than its original (`.jpg`, `.jpeg`, `.png`, `.webp`, `.avif`). |
 | `carried` | 6 | one to 24 output paths served as you wrote them (schema 6): each is the file `site/carried/<path>`, byte for byte, not token-expanded; `CNAME`, `.nojekyll`, `robots.txt`, `sitemap.xml`, anything under `site-studio/` and a name the publish check never publishes are refused. The publish check holds a carried page to privacy, links, the site's own origin, its path and size, not to site-studio's page form, and says so. The first build after the site's address changes refuses a carried page whose addresses still name the old path, until you correct them or remove the path from `carried`. Without this key `site/carried/` is not read. |
+| `images` | 10 | how the publish check treats a picture written without its size (schema 10; keys below): `{"sizes": "as-written"}` leaves the pictures of every page as the old site had them, and the check does not ask for `width` and `height` (or `sizes` beside a `srcset`) on any page, a written value still having to be true; `{"sizes": "held"}` has the generated pages print each picture with its size and link one small stylesheet, `site-studio/held.css`, that keeps the layout. Without this key the check asks as before, and `{}` is never written. |
+| `sitemap` | 10 | `indexable` (schema 10; the only value): the sitemap leaves out a page that is a redirect or asks not to be indexed (`noindex`), and the publish check lets a deliberate `noindex` page through; without it the sitemap lists them as before. |
 | `redirects` | 1 | old address to new page, one redirect page each. |
 | `resume` | 1 | the resume's source and PDF, or null for none (keys below). |
 | `budgets` | 1 | overrides for the performance limits (keys below). |
@@ -86,7 +88,13 @@ Top-level keys, in the order the plugin writes them. A key marked schema 2 makes
 
 A word is one line of at most 80 characters. The words the plugin proposes when it captures or adopts a reference, which it never stores without your yes, and which your own list replaces: types `Article`, `Blog`, `Case study`, `Film`, `Interview`, `Podcast`, `Post`, `Presentation`, `Press`, `Report`, `Video`, `Website`; channels `Bluesky`, `Facebook`, `Instagram`, `LinkedIn`, `Medium`, `Pinterest`, `Substack`, `Threads`, `TikTok`, `Website`, `X`, `YouTube`.
 
-`budgets` holds any of these, each with its default:
+`images` holds `sizes` (schema 10; a file below schema 10 that holds it is refused with `needs "schema": 10`):
+
+| images key | meaning |
+| --- | --- |
+| `images.sizes` | `as-written` or `held`; see `images` above. |
+
+`budgets` holds any of these, each with its default; `lazyImagesMaxMB` needs schema 10 and is refused below it the same way:
 
 | budget | default | meaning |
 | --- | --- | --- |
@@ -94,12 +102,15 @@ A word is one line of at most 80 characters. The words the plugin proposes when 
 | `pageImagesMaxMB` | 5 | all images per page, at 2x, in MB. |
 | `sizeCopyOverKB` | 250 | an image over this many KB needs size copies. |
 | `treeMaxMB` | 200 | the whole published tree, in MB. |
+| `lazyImagesMaxMB` | 20 | the pictures of one page that load only as the visitor scrolls (`loading="lazy"`), at 2x, in MB, counted apart from the pictures that load first (schema 10); never less than `pageImagesMaxMB`. |
 
 ## Portfolio settings
 
 The same keys are set in `site.json` `work` (the default portfolio) and in a portfolio's `page.md` front matter, which overrides them. Any other key is refused. `cardNumber`, `cardNumberFormat`, `cardLabels`, `backLink` need schema 4: a file below schema 4 that holds one is refused with `needs "schema": 4`; written at its default (`cardNumber` false, `cardNumberFormat` padded, `cardLabels` true) a key is accepted and dropped.
 
 `cardImage`, `cardAlt`, `cardKicker`, `pieceLink`, `pieceTeaser` need schema 5: a file below schema 5 that holds one is refused with `needs "schema": 5`, and each is kept as written (`cardImage: cover` in a grid changes nothing, and is still a reason for schema 5).
+
+`blankMeta` need schema 10, refused below it the same way.
 
 | key | meaning |
 | --- | --- |
@@ -122,6 +133,7 @@ The same keys are set in `site.json` `work` (the default portfolio) and in a por
 | `pieceTeaser` | `true` (schema 5): a piece page prints the piece's `teaser` as one paragraph under its title. |
 | `groupCount` | `true` (schema 6): each group heading prints how many pieces it shows, with the word `labels.counts` gives; refused without `groupBy`. |
 | `pieceRoles` | `true` (schema 6): a piece's `role` is a list of dated roles, `Title (dates)`, printed in the order written (see the schema-6 piece keys). |
+| `blankMeta` | `omit` (schema 10; the only value): a listed key whose value is blank (no text, spaces only, an empty list) prints no row on the piece page and no separator on a card, and when none is left the list and the card's meta line are not printed; `false` and `0` are values. Without it a blank value prints an empty row, as before. |
 
 Portfolio page keys (a `page.md`, schema 3): each is refused below schema 3 with `needs "schema": 3`.
 
@@ -151,7 +163,7 @@ Home, about, resume and portfolio pages read a fixed set of keys; any other key 
 | home (`content/home.md`) | `title`, `description`, `featured`, `feed`, `endorsement`, `photo`, `photoAlt`, `contact` (and, at schema 4, `eyebrow`, `role`, `showcase`, `samples`, `links`, `titleForm`, `introScope`, `partOrder`) |
 | about (`content/about.md`) | `title`, `description`, `endorsement`, `photo`, `photoAlt`, `contact` |
 | resume (`content/resume/resume.md`) | `title`, `description` (and `contact` at schema 3, `tagline`, `links` at schema 4) |
-| portfolio (`page.md`) | `title`, `label`, `description`, `required`, `meta`, `cardMeta`, `groupBy`, `groups`, `labels`, `cardNumber`, `cardNumberFormat`, `cardLabels`, `backLink`, `cardImage`, `cardAlt`, `cardKicker`, `pieceLink`, `pieceTeaser`, `groupCount`, `pieceRoles`, `order`, `tagline`, `sort`, `menuLinks`, `view`, `mapMask`, `onePieceIndex` |
+| portfolio (`page.md`) | `title`, `label`, `description`, `required`, `meta`, `cardMeta`, `groupBy`, `groups`, `labels`, `cardNumber`, `cardNumberFormat`, `cardLabels`, `backLink`, `cardImage`, `cardAlt`, `cardKicker`, `pieceLink`, `pieceTeaser`, `groupCount`, `pieceRoles`, `blankMeta`, `order`, `tagline`, `sort`, `menuLinks`, `view`, `mapMask`, `onePieceIndex` |
 
 | key | meaning |
 | --- | --- |

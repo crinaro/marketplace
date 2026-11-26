@@ -11,7 +11,7 @@ from building.outcomes import BuildError
 from building.pagebase import _PageBase
 from building.portfolios import _Portfolios
 from building.siteparts import _SiteParts
-from building import grouping
+from building import carried, grouping
 from building.tokens import (
     ASSET_EXTS,
     TOKEN_SCOPES,
@@ -24,6 +24,53 @@ from building.tokens import (
     strip_css_comments,
 )
 from contentmodel.links import esc
+
+# design-publish-preflight section 3.2 (dev 1068): the tag the look's own picture part writes under `images: {"sizes": "held"}`, and how the
+# build finds it. Attributes are read with every quoted value taken out, so a word inside an `alt` is never the attribute.
+_TAG = re.compile(r"<(?:img|link)\b(?:[^>\"']|\"[^\"]*\"|'[^']*')*>", re.I)
+_QUOTED = re.compile(r"\"[^\"]*\"|'[^']*'")
+_HELD_ATTR = re.compile(r"\sdata-ss-held(?![\w:.-])", re.I)
+_REL = re.compile(r"""\brel\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))""", re.I)
+_STYLE = re.compile(r"<style[\s>]", re.I)
+_HEAD_END = re.compile(r"</head\s*>", re.I)
+HELD_SHEET = "site-studio/held.css"
+
+
+def held_mode(cfg):
+    """True under `images: {"sizes": "held"}` (schema 10); an absent key, `as-written` and every older tree are False."""
+    return (getattr(cfg, "images", None) or {}).get("sizes") == "held"
+
+
+def held_images(text):
+    """[start of each `<img>` tag of `text` that carries `data-ss-held`], in order."""
+    return [m.start() for m in _TAG.finditer(text)
+            if m.group(0)[:4].lower() == "<img" and _HELD_ATTR.search(_QUOTED.sub('""', m.group(0)))]
+
+
+def _first_sheet(text, end):
+    """Where the first stylesheet link or `<style>` begins in `text[:end]`, else None."""
+    found = []
+    for m in _TAG.finditer(text, 0, end):
+        if m.group(0)[:5].lower() == "<link":
+            rel = _REL.search(m.group(0))
+            if rel and "stylesheet" in (rel.group(1) or rel.group(2) or rel.group(3) or "").lower().split():
+                found.append(m.start())
+                break
+    style = _STYLE.search(text, 0, end)
+    if style:
+        found.append(style.start())
+    return min(found) if found else None
+
+
+def held_position(text):
+    """Where `held.css` is linked into the page `text`: before the first stylesheet or `<style>` of its head, else before `</head>`; a page
+    with no `</head>` takes the first stylesheet or `<style>` anywhere, else the place of its first held picture. It is first so that the
+    layer it declares is the weakest of the page (design section 3.1: linked after the site's styles, 16 of 272 layouts change)."""
+    head = _HEAD_END.search(text)
+    sheet = _first_sheet(text, head.start() if head else len(text))
+    if sheet is not None:
+        return sheet
+    return head.start() if head else held_images(text)[0]
 
 
 class _Builder(_PageBase, _MarkdownEnv, _HomePage, _Portfolios, _SiteParts):
@@ -111,7 +158,24 @@ class _Builder(_PageBase, _MarkdownEnv, _HomePage, _Portfolios, _SiteParts):
             if extra and name in extra:
                 return extra[name]
             raise BuildError("%s: unknown token {{%s}}" % (source, name), fix="check the spelling of the token, or remove it (the tokens are listed in %s)" % CONTENT_MODEL)
-        return _TOKEN.sub(sub, text)
+        printed = _TOKEN.sub(sub, text)
+        if featured and held_mode(self.cfg):       # a whole page (the layout, or a hand page): `featured` is true for exactly those
+            printed = self.link_held(printed, text, current_out)
+        return printed
+
+    def link_held(self, printed, written, out_path):
+        """Under `images.sizes: held` (section 3.2): the page `printed` links `site-studio/held.css` once, first among its stylesheets, when
+        the BUILD printed an `<img data-ss-held>` into it, that is, when it holds more of them than `written` (the layout's or the hand
+        page's own text) does. A page whose only such tags are the person's own is never touched, and neither is a block image (no look
+        part of a block holds the attribute). The file is published with the page that links it (`asset_html` registers it)."""
+        if len(held_images(printed)) <= len(held_images(written)):
+            return printed
+        tag = self.asset_html(out_path, "held")
+        if not tag or HELD_SHEET in printed:
+            return printed
+        at = held_position(printed)
+        lead = printed[printed.rfind("\n", 0, at) + 1:at]       # the indent of the line it goes in front of, kept for the line it pushes down
+        return printed[:at] + tag + "\n" + (lead if not lead.strip() else "") + printed[at:]
 
     def asset_version(self):
         """`{{assetVersion}}` (schema 6, design-adopt-parity-2 section 3.2): `tokens.asset_version` of the bytes this build
@@ -180,9 +244,10 @@ class _Builder(_PageBase, _MarkdownEnv, _HomePage, _Portfolios, _SiteParts):
     def build_sitemap(self, lastmod):
         self.build_carried()        # schema 6: before the sitemap lists the pages; nothing without the `carried` key
         entries = []
+        indexable = getattr(self.cfg, "sitemap", None) == "indexable"      # schema 10, dev 1068: a page that says it is out of search is not listed
         for out_path in sorted(self.pages):
             info = self.pages[out_path]
-            if not info["sitemap"]:
+            if not info["sitemap"] or (indexable and carried.left_out(self.out[out_path])):
                 continue
             loc = self.abs_url(out_path)
             lm = lastmod(info["lastmod_src"]) if info["lastmod_src"] else None

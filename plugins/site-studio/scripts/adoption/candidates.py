@@ -32,7 +32,7 @@ from contentmodel.errors import ContentError
 from contentmodel.frontmatter import parse_front_matter
 from contentmodel.keytables import VIEW_PIECE_KEYS, piece_keys_read
 
-from adoption import carry, homeparts, menulabels
+from adoption import carry, homeparts, menulabels, settings10
 from adoption.convert import PIECE_KEY_SYNONYMS
 from adoption.facts import links_above_title
 from adoption.keycover import synonym_sources
@@ -307,6 +307,16 @@ def read_keys(port, snap, data, settings=None):
     return known
 
 
+def listed_meta(port, snap, data, settings=None):
+    """The keys `meta` and `cardMeta` list for portfolio `port` (its page.md, and site.json's `work` object for the portfolio named `work`, or every portfolio under `workKeys: all`)."""
+    s, work, out = settings or {}, (data or {}).get("work") or {}, set()
+    for key in ("meta", "cardMeta"):
+        out.update(_front_list(snap, port, key))
+        if port == "work" or s.get("workKeys") == "all":
+            out.update(plain_keys(work.get(key)))
+    return out
+
+
 def unread_keys(port, snap, data, settings=None):
     """cardKicker's candidates for `port`: each piece key nothing reads (`read_keys`), most-used first, name order on a tie, at most
     `KICKER_MAX`. A key a piece holds as `true` or `false` is never one: the build refuses to print a yes-or-no value as a kicker
@@ -371,6 +381,8 @@ def candidates_for(name, snap, data, local=None, settings=None):
         return [None, paths] if paths else [None]
     if fam in V5_PORTFOLIO_SETTINGS and "." in name:
         return v5_candidates(name, snap, data, settings, local)
+    if fam in settings10.PORTFOLIO_FAMILIES and "." in name:      # `blankMeta.<p>` (0.10.0): offered where a piece holds a blank key the portfolio lists
+        return settings10.blank_candidates(name.split(".", 1)[1], snap, listed_meta(name.split(".", 1)[1], snap, data, settings))
     if fam in V6_PORTFOLIO_SETTINGS or name in V6_SITE_SETTINGS or fam == "mediaPaths":
         return v6_candidates(name, snap, data, local, settings)
     if menulabels.is_label(name) or name == menulabels.TITLE_FORM:     # schema 8: the old menu's words, read from the old build
@@ -746,7 +758,7 @@ def setting_names(snap):
     labels, title_form = menulabels.names(snap)       # schema 8: a menu label per page the tree has, then the resume's title form
     names += ["nav.home", "nav.extra"] + labels + ["titleSeparator", "resume.headings", "resume.layout"] + title_form
     names += ["workKeys", "cardLabels", "cardNumber", "cardNumberFormat"]
-    names += ["%s.%s" % (fam, p) for fam in V5_PORTFOLIO_SETTINGS + V6_PORTFOLIO_SETTINGS for p in sorted(portfolio_facts(snap))]
+    names += ["%s.%s" % (fam, p) for fam in V5_PORTFOLIO_SETTINGS + V6_PORTFOLIO_SETTINGS + settings10.PORTFOLIO_FAMILIES for p in sorted(portfolio_facts(snap))]
     if BACK_LINK_PER_PORTFOLIO:
         names += ["backLink.%s" % p for p in sorted(portfolio_facts(snap))]      # schema 6: per portfolio (section 7.6)
     else:

@@ -47,6 +47,7 @@ import posixpath
 import re
 from urllib.parse import unquote
 from sitechecks.kinds import IMAGE_EXTS, KNOWN_GENERATORS, SITE_TEXT_EXTS
+from sitechecks.page import main_words
 from sitechecks.report import Finding
 from sitechecks.shapes import email_hits, mask, norm_for_terms, phone_hits, street_hits
 
@@ -163,14 +164,14 @@ class PrivacyChecks(object):
                 reasons.append("resume PDF has no sidecar proving it against its source (rule 2)")
             else:
                 page = self.pages.get("resume/index.html")
-                src = " ".join(page.main_text) if page else ""
+                src = main_words(page) if page else ""
                 cov = wordcoverage.word_coverage(src, res.text)
                 # the page's text has the download-link caption and headings the print may omit
-                # only if the author's print stylesheet hides them; the bound is the design's 95%
-                if cov is None or cov < 0.95:
+                # only if the author's print stylesheet hides them; the bound is `wordcoverage.NEEDED` (95%), the one object
+                if not wordcoverage.meets(cov):
                     status_read = False
-                    reasons.append("rule 2: the PDF's text covers %s of the resume page's words (needs 95%%)"
-                                   % ("none" if cov is None else "%d%%" % int(cov * 100)))
+                    reasons.append("rule 2: the PDF's text covers %s of the resume page's words (needs %d%%)"
+                                   % ("none" if cov is None else "%d%%" % int(cov * 100), int(wordcoverage.NEEDED * 100)))
         if res.text:
             for form in res.search_forms()[:1]:
                 scan_shapes(rel, form, " (in the PDF text)")

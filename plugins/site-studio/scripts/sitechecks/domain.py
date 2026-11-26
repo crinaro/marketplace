@@ -12,6 +12,11 @@
   og:url equal the page's own address": the build's `presence` writes those on its own pages only, a byte-for-byte page
   keeps what the person wrote, and refusing it for that form would change nothing for a visitor. `CNAME` is never
   carried (the key refuses it), so the CNAME rules are unchanged. A tree without the key is judged as before.
+
+  Dated note, 2026-11-25 (design-publish-preflight section 7, dev 1068; looser only, `tests/test_gate_only_looser.py`): under `site.json`
+  `sitemap: "indexable"` (schema 10) a page the build leaves out of the sitemap, because a `robots` meta holds `noindex` or `none`
+  (`page.search_out`, the function the build asks too; `checker.left_out`), is not asked for: "page is missing from sitemap.xml" is not raised for
+  it, carried pages included. A page listed anyway is still a real page, so a listed one passes. Without the key: as before.
 """
 
 import re
@@ -84,7 +89,7 @@ class DomainChecks(object):
                 else:
                     targets.add(target)
             for rel in self.content_pages:
-                if rel != "404.html" and rel not in targets:
+                if rel != "404.html" and rel not in targets and rel not in self.left_out:      # dated note 2026-11-25
                     self.r.add(fam, rel, "page is missing from sitemap.xml")
         if "robots.txt" in self.t.files:
             n += 1

@@ -144,6 +144,8 @@ def preflight_occurrences(causes):
         if c["state"] == "not-checked":
             notes.append(c["detail"])
             continue
+        if c["cause"] == "publish/staging":      # printed and blocking, never a cause: no new id, and not the plugin's to file (dev 1068)
+            continue
         parts = c["cause"].split("/")
         try:
             out.append({"id": grammar.cause_id(*parts), "row": None})
@@ -157,8 +159,10 @@ def grouped(occurrences):
     return report_issue.group_occurrences(occurrences)
 
 
-def summary_line(causes):
-    """The line `apply` and `remeasure` print when blocked."""
+def summary_line(causes, own=0):
+    """The line `apply` and `remeasure` print when blocked. `own` counts the groups of publish findings that are the site's, the person's or
+    adopt's to fix (dev 1068, design 1.3): they block like a person cause, are printed above with their fix and are never filed, so a block
+    made of them alone says "each one only you can resolve", as a person cause does."""
     plugin = [c for c in causes if classify(c["id"]) == "plugin"]
-    return "blocked: %d cause(s); run `adopt.py report` to read them" % len(causes) if plugin else \
-        "blocked: %d cause(s), each one only you can resolve (printed above with its fix)" % len(causes)
+    return "blocked: %d cause(s); run `adopt.py report` to read them" % (len(causes) + own) if plugin else \
+        "blocked: %d cause(s), each one only you can resolve (printed above with its fix)" % (len(causes) + own)

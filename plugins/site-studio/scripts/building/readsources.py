@@ -91,12 +91,23 @@ def _norm(value):
     return " ".join(unicodedata.normalize("NFC", frontmatter.meta_text(value)).split())
 
 
-def rows(look, target, meta, keys):
+def blank(value):
+    """True for a front matter value that says nothing (0.10.0, design-publish-preflight section 6): nothing at all, text of spaces only,
+    or an empty list. `False` and `0` are values, and so is a list of anything."""
+    if value is None:
+        return True
+    if isinstance(value, str):
+        return not value.strip()
+    return isinstance(value, (list, tuple)) and not value
+
+
+def rows(look, target, meta, keys, omit_blank=False):
     """The keys of `keys` (the `meta` or `cardMeta` setting) that print for a piece whose front matter is `meta`: each it
     holds, in order, less each whose value equals the value of the entry's `unless` key. Without an entry, or when the
-    piece does not hold the `unless` key, every key it holds (0.6.0)."""
+    piece does not hold the `unless` key, every key it holds (0.6.0). `omit_blank` (0.10.0, a portfolio's `blankMeta: "omit"`):
+    a key whose value is `blank` is not one it holds; false is 0.9.0's reading, a blank value printing its empty row."""
     _kind(target, ROWS)
-    kept = [k for k in keys if k in meta]
+    kept = [k for k in keys if k in meta and not (omit_blank and blank(meta[k]))]
     spec = entry(look, target)
     if spec is None or spec.unless is None or spec.unless not in meta:
         return kept

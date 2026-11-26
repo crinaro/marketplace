@@ -17,7 +17,7 @@ PLAN_REL = ".site-studio/adopt-plan.json"
 PARITY_RECORD_REL = ".site-studio/adopt-parity.json"
 RECORD_SCHEMA = 1
 FACT_KINDS = ("context", "voice", "rule")
-UNIT_DISPOSITIONS = ("person-data", "keep", "rule")       # `rule` is NOT the `rule` fact kind: it goes to CLAUDE.md
+UNIT_DISPOSITIONS = ("person-data", "keep", "rule", "covered")       # `rule` is NOT the `rule` fact kind: it goes to CLAUDE.md; `covered` is "the plugin covers this, drop it" (plan schema 6, dev 1068)
 # What the person may decide for a content/ folder that has no page.md (design 7.2): the default,
 # `source`, renames it to content/_<name> (kept as source material, not built); `portfolio` adds a page.md.
 FOLDER_CHOICES = ("source", "portfolio")

@@ -11,6 +11,7 @@ facts are unreviewed, any residual unit is undispositioned or marked keep, a bui
 not EQUAL or ACCEPTED, or a hook would be left naming a file that is not in the new tree.
 """
 
+import hashlib
 import json
 import os
 import re
@@ -24,7 +25,7 @@ from adoption.tokens import detect_resume
 from adoption.parity import parity_basis, stale_parity
 
 PLAN_SCHEMA = 1                    # what an empty plan, and a plan with nothing that needs 2, is written at
-PLAN_SCHEMA_MAX = 5                # schema 2 adds `settings`, `files[path].disposition` and the verdict MARKUP-ONLY; 3 the parity's
+PLAN_SCHEMA_MAX = 6                # schema 2 adds `settings`, `files[path].disposition` and the verdict MARKUP-ONLY; 3 the parity's
 #                                    `plugin`, `open` and `shots` (design-adopt-parity-2 3.2), and a setting 0.5.x has no name for
 PARITY_V3 = ("plugin", "open", "shots")
 # Plan schema 4 (design-adopt-ownership-line 2.7): the measured rows of the person's look entries, named `look.<construct>` and
@@ -33,6 +34,16 @@ PERSON_ROWS = ("look.", "reads.")
 # Plan schema 5 (design-reference-layout 4.3): a `keep` on a file that is not a workflow, which 0.8.0 would read as a plain `kept` and
 # hide a loss with, and the two settings 0.9.0 writes (`blocks.unlistedVideos`, `referenceLayout`); 0.8.0 refuses the plan at schema 5.
 V9_SETTINGS = ("blocks.unlistedVideos", "referenceLayout")
+# Plan schema 6 (design-publish-preflight section 8, dev 1068): a unit disposition `covered` ("the plugin covers this; drop it", S6; and `files[path].covered`,
+# the same answer for a whole PARTIAL script: `confirm --covered`),
+# `resumeProof` (the person's "this PDF is right", S5) and the settings 0.10.0 writes (`images.sizes`, `sitemap`, `blankMeta.<portfolio>`);
+# 0.9.0 refuses the plan at schema 6 ("update site-studio"). The constant, the reading of `settings` at 6 and the two tables below are S0's;
+# `covered` is `base.UNIT_DISPOSITIONS`' fourth member; `resumeProof` is S5's: `{"asIs": <the resume PDF's sha256>, "source": <the converted resume source's sha256>}`
+# (review R2: the vouch is for this PDF against this resume), written by `adopt.py proof --as-is`, void when EITHER changes (`resumeproof.vouched_sha`, read by `prove`,
+# which says so; `carry_plan` clears it when the PDF is another file). 0.9.0 meets a plan of schema 6 with "update site-studio ... or delete .site-studio/adopt-plan.json"
+# (no settings) or "unknown key 'settings'; edit or delete ..." (with them): so a plan is written at 6 ONLY where `lowest_schema` finds a 0.10.0 record in it.
+V10_SETTINGS = ("images.sizes", "sitemap")
+V10_SETTING_PREFIX = "blankMeta."
 _WORKFLOW = re.compile(r"^\.github/workflows/[^/]+\.ya?ml$")      # `accounting.is_workflow`'s (that module imports this one; a test says they agree)
 PERSON_VALUE_KEYS = ("file", "sha256", "pages", "yours", "derived", "status")
 PERSON_FILES = ("site/looks/local.json", "site/looks/derived.json")
@@ -51,6 +62,11 @@ FILE_DISPOSITIONS = ("archive", "draft", "keep", "engine")      # the person's c
 PLAN_VERDICTS = ("EQUAL", "DIFFERENT", "UNVERIFIED", "ACCEPTED", "NOT APPLICABLE")
 
 
+def is_v10_setting(name):
+    """True for a setting only 0.10.0 writes (`V10_SETTINGS`, and `blankMeta.<portfolio>`): the plan that holds one is schema 6."""
+    return isinstance(name, str) and (name in V10_SETTINGS or name.startswith(V10_SETTING_PREFIX))
+
+
 def empty_plan(base):
     return {"schema": PLAN_SCHEMA, "base": base, "files": {}, "facts": [], "paper": None, "parity": None,
             "folders": {}, "siteKind": None, "convert": [], "settings": {}}
@@ -64,17 +80,17 @@ def parse_plan(text):
                         "again), then run `adopt.py check`" % e)
     if not isinstance(d, dict):
         raise PlanError("adopt plan: the top level must be an object")
-    two = d.get("schema") in (2, 3, 4, 5) and not isinstance(d.get("schema"), bool)
+    two = d.get("schema") in (2, 3, 4, 5, 6) and not isinstance(d.get("schema"), bool)
     # an empty `settings` is what an in-memory plan carries (save_plan does not write it at schema 1); a schema-1 file
     # that holds a setting is refused as an unknown key, as an older install refuses it
-    allowed = ("schema", "base", "files", "facts", "paper", "parity", "folders", "siteKind", "convert") + (
+    allowed = ("schema", "base", "files", "facts", "paper", "parity", "folders", "siteKind", "convert", "resumeProof") + (
         ("settings",) if two or d.get("settings") == {} else ())
     for k in d:
         if k not in allowed:
             raise PlanError("adopt plan: unknown key '%s'; edit or delete .site-studio/adopt-plan.json (deleted, it starts "
                             "again), then run `adopt.py check`" % k)
     for k in allowed:
-        if k not in d and k not in ("folders", "siteKind", "convert", "settings"):
+        if k not in d and k not in ("folders", "siteKind", "convert", "settings", "resumeProof"):
             raise PlanError("adopt plan: '%s' is missing; edit or delete .site-studio/adopt-plan.json (deleted, it starts "
                             "again), then run `adopt.py check`" % k)
     d.setdefault("folders", {})
@@ -96,6 +112,14 @@ def parse_plan(text):
         raise PlanError("adopt plan: schema %r is not understood (this adopt reads 1 to %d); update site-studio if the "
                         "plan came from a newer one, or delete .site-studio/adopt-plan.json and run `adopt.py check`"
                         % (d["schema"], PLAN_SCHEMA_MAX))
+    if "resumeProof" in d:
+        row = d["resumeProof"]
+        if d["schema"] < 6:
+            raise PlanError("adopt plan: 'resumeProof' needs plan schema 6 (this plan says %r); delete .site-studio/adopt-plan.json and run "
+                            "`adopt.py proof --as-is` again" % d["schema"])
+        if not (isinstance(row, dict) and set(row) == {"asIs", "source"} and all(isinstance(row[k], str) and _SHA.match(row[k]) for k in row)):
+            raise PlanError("adopt plan: 'resumeProof' must be {\"asIs\": the resume PDF's sha256, \"source\": the converted resume source's sha256}; edit "
+                            ".site-studio/adopt-plan.json to remove it, then run `adopt.py proof --as-is` again")
     if not isinstance(d["settings"], dict):
         raise PlanError("adopt plan: 'settings' must be an object")
     for name, row in d["settings"].items():
@@ -110,6 +134,9 @@ def parse_plan(text):
         if name in V9_SETTINGS and d["schema"] < 5:
             raise PlanError("adopt plan: settings[%r] needs plan schema 5 (this plan says %r); delete .site-studio/adopt-plan.json and run "
                             "`adopt.py parity` to measure again" % (name, d["schema"]))
+        if is_v10_setting(name) and d["schema"] < 6:
+            raise PlanError("adopt plan: settings[%r] needs plan schema 6 (this plan says %r); delete .site-studio/adopt-plan.json and run "
+                            "`adopt.py parity` to measure again" % (name, d["schema"]))
     if not isinstance(d["base"], str) or not re.match(r"^[0-9a-f]{40}$", d["base"]):
         raise PlanError("adopt plan: 'base' must be a 40-hex commit")
     if not isinstance(d["files"], dict):
@@ -118,7 +145,7 @@ def parse_plan(text):
         if not isinstance(f, dict):
             raise PlanError("adopt plan: files[%r] must be an object" % path)
         for k in f:
-            if k not in ("removal", "as", "reviewed", "units") + (("disposition",) if two else ()):
+            if k not in ("removal", "as", "reviewed", "units") + (("disposition",) if two else ()) + (("covered",) if d["schema"] >= 6 else ()):
                 raise PlanError("adopt plan: unknown key files[%r].%s; edit or delete .site-studio/adopt-plan.json (deleted, it "
                                 "starts again), then run `adopt.py check`" % (path, k))
         if f.get("removal") not in (None, "confirm", "keep"):
@@ -127,12 +154,17 @@ def parse_plan(text):
             raise PlanError("adopt plan: files[%r].disposition must be one of %s" % (path, ", ".join(FILE_DISPOSITIONS)))
         if not isinstance(f.get("reviewed", False), bool):
             raise PlanError("adopt plan: files[%r].reviewed must be true or false" % path)
+        if f.get("covered", True) is not True:
+            raise PlanError("adopt plan: files[%r].covered must be true when it is there" % path)
         if not isinstance(f.get("units", {}), dict):
             raise PlanError("adopt plan: files[%r].units must be an object" % path)
         for uid, u in f.get("units", {}).items():
             if not isinstance(u, dict) or u.get("disposition") not in UNIT_DISPOSITIONS:
-                raise PlanError("adopt plan: files[%r].units[%r].disposition must be 'person-data', 'keep' or 'rule'"
+                raise PlanError("adopt plan: files[%r].units[%r].disposition must be 'person-data', 'keep', 'rule' or 'covered'"
                                 % (path, uid))
+            if u["disposition"] == "covered" and d["schema"] < 6:
+                raise PlanError("adopt plan: files[%r].units[%r] 'covered' needs plan schema 6 (this plan says %r); delete "
+                                ".site-studio/adopt-plan.json and run `adopt.py inventory` again" % (path, uid, d["schema"]))
             if u["disposition"] == "person-data" and u.get("kind") not in FACT_KINDS:
                 raise PlanError("adopt plan: files[%r].units[%r].kind must be one of %s"
                                 % (path, uid, ", ".join(FACT_KINDS)))
@@ -229,8 +261,13 @@ def lowest_schema(plan):
     """The lowest plan schema that holds `plan` (design 3.5: schema 2 is written only when something needs it, so an older
     install reads every plan that has nothing a schema-1 plan cannot hold). Schema 3 when the parity holds a member of
     `PARITY_V3` (every parity this site-studio measures names its `plugin`) or a setting is one 0.5.x has no name for; schema 4 for a
-    row of the person's look entries; schema 5 for a `keep` on a file that is not a workflow, or a `V9_SETTINGS` row."""
+    row of the person's look entries; schema 5 for a `keep` on a file that is not a workflow, or a `V9_SETTINGS` row; schema 6 for a
+    setting only 0.10.0 writes (`is_v10_setting`), a `resumeProof`, or a `covered` answer (a unit's or a whole file's)."""
     parity = plan.get("parity") or {}
+    if plan.get("resumeProof") or any(is_v10_setting(n) for n in plan.get("settings") or {}) or any(
+            f.get("covered") or any(u.get("disposition") == "covered" for u in (f.get("units") or {}).values())
+            for f in plan["files"].values()):
+        return 6
     if any(n in V9_SETTINGS for n in plan.get("settings") or {}) or any(
             f.get("disposition") == "keep" and not _WORKFLOW.match(p) for p, f in plan["files"].items()):
         return 5
@@ -249,6 +286,8 @@ def save_plan(repo, plan):
     plan["schema"] = lowest_schema(plan)
     if not plan.get("settings"):
         plan.pop("settings", None)
+    if not plan.get("resumeProof"):
+        plan.pop("resumeProof", None)
     parse_plan(json.dumps(plan))
     p = plan_path(repo)
     os.makedirs(os.path.dirname(p), exist_ok=True)
@@ -293,7 +332,7 @@ def carry_plan(repo, old, base):
         return was is not None and bool(b) and a == b
     for path, d in sorted(old["files"].items()):
         what = [w for w, on in (("removal %s" % d.get("removal"), d.get("removal")), ("--as %s" % d.get("as"), d.get("as")),
-                                ("reviewed", d.get("reviewed")), ("%d unit decision(s)" % len(d.get("units") or {}),
+                                ("reviewed", d.get("reviewed")), ("covered by the plugin", d.get("covered")), ("%d unit decision(s)" % len(d.get("units") or {}),
                                                                  d.get("units")),
                                 ("disposition %s" % d.get("disposition"), d.get("disposition"))) if on]
         if not what:
@@ -318,6 +357,16 @@ def carry_plan(repo, old, base):
             new["paper"] = old["paper"]
         else:
             cleared.append("the paper size %s (the resume PDF changed or is gone)" % old["paper"])
+    if old.get("resumeProof"):                      # `--as-is` was for one PDF against one resume: it travels only while both are those same files
+        tree = Tree(repo, base)
+        found = detect_resume(tree)
+        pdf = found["pdf"]
+        if not (pdf and tree.exists(pdf) and hashlib.sha256(tree.read(pdf)).hexdigest() == old["resumeProof"]["asIs"]):
+            cleared.append("your `adopt.py proof --as-is` (the resume PDF changed or is gone)")
+        elif not same(found["md"]):                 # the person vouched against an older resume (review R2); `prove` binds the converted source's hash as well
+            cleared.append("your `adopt.py proof --as-is` (the resume changed since you vouched for this PDF against it)")
+        else:
+            new["resumeProof"] = old["resumeProof"]
     if old["parity"] is not None:
         cleared.append("the parity result %s (measured on %s; run `adopt.py parity` again)"
                        % (old["parity"].get("verdict"), old["base"][:7]))

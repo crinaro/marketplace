@@ -3,6 +3,7 @@
 design-adopt-parity-2 section 3.2) and the schema-7 key `lookLocal` (design-adopt-ownership-line section 2.1). Each
 reads one raw value and reports into a collector."""
 
+import math
 import re
 import unicodedata
 from configschema.configkeys import (
@@ -13,6 +14,8 @@ from configschema.configkeys import (
     CARRIED_RESERVED,
     CARRIED_RESERVED_DIRS,
     FEATURED_VIEWS,
+    IMAGES_KEYS,
+    IMAGES_SIZES,
     LOOK_LOCAL_PATH,
     GATE_FORBIDDEN_DIRS,
     GATE_FORBIDDEN_NAMES,
@@ -31,9 +34,11 @@ from configschema.configkeys import (
     REFERENCE_WORDS_MAX,
     RESUME_HEADINGS,
     SCHEMA_MAX,
+    SITEMAP_VALUES,
     SIZE_COPIES,
     TITLE_SEPARATOR_DEFAULT,
     TITLE_SEPARATOR_MAX,
+    V10_BUDGET_KEYS,
     V6_NAV_KEYS,
     V8_NAV_KEYS,
     V9_BLOCKS_KEYS,
@@ -78,6 +83,15 @@ def needs_schema_9(where, have):
                            found="schema %d" % have, expected="schema 9",
                            fix="run `python3 build.py raise-schema --to 9`, which lists what the page changes before "
                                "it writes schema 9")
+
+
+def needs_schema_10(where, have):
+    """A schema-10 key under a lower declared schema: 0.9.0 refuses it as an unknown key, and 0.10.0 refuses it naming the
+    schema (design-publish-preflight section 8; dev 1068)."""
+    return SiteConfigError("site.json: '%s' needs \"schema\": 10" % where, path=where,
+                           found="schema %d" % have, expected="schema 10",
+                           fix="run `python3 build.py raise-schema --to 10`, which lists what the page changes before "
+                               "it writes schema 10")
 
 
 def _look_local(v, look=None):
@@ -386,15 +400,36 @@ def _redirects_check(raw, col):
     return out
 
 
-def _budgets_check(raw, col):
+def _finite_number(v, where):
+    """`_number`, and a finite one: JSON as Python reads it holds `NaN` and `Infinity`, which compare above zero or never
+    below it and would make a limit that never refuses (schema 10's `budgets.lazyImagesMaxMB`; dev 1068)."""
+    v = _number(v, where)
+    if not math.isfinite(v):
+        raise SiteConfigError("site.json: '%s' must be a finite number" % where, path=where, found=_shown(repr(v)),
+                              expected="a finite number above zero", fix="set '%s' to a number such as 20" % where)
+    return v
+
+
+def _budgets_check(raw, col, schema=SCHEMA_MAX):
+    """`budgets`: the four limits of `BUDGET_DEFAULTS`, each a number above zero, and from schema 10 `lazyImagesMaxMB`
+    (`V10_BUDGET_KEYS`, a finite number above zero; below 10 it is refused naming the schema)."""
     if not isinstance(raw, dict):
         col.run(_bad, "budgets", "an object", raw)
         return {}
     out = {}
     for k, v in raw.items():
+        if k in V10_BUDGET_KEYS:
+            if schema < 10:
+                col.problems.append(needs_schema_10("budgets.%s" % k, schema).problem)
+            else:
+                ok, val = col.run(_finite_number, v, "budgets." + k)
+                if ok:
+                    out[k] = val
+            continue
         if k not in BUDGET_DEFAULTS:
+            known = sorted(BUDGET_DEFAULTS) + (sorted(V10_BUDGET_KEYS) if schema >= 10 else [])
             col.add("site.json: unknown key 'budgets.%s'" % k, "budgets.%s" % k, "unknown key",
-                    "one of: " + ", ".join(sorted(BUDGET_DEFAULTS)), "remove 'budgets.%s'" % k)
+                    "one of: " + ", ".join(known), "remove 'budgets.%s'" % k)
             continue
         ok, val = col.run(_number, v, "budgets." + k)
         if ok:
@@ -539,4 +574,39 @@ def v6_top_check(data, col):
         v = _carried_check(data["carried"], col)
         if v:
             out["carried"] = v
+    return out
+
+
+def _images_check(raw, col):
+    """`images` (schema 10, design-publish-preflight section 3.2, owner decision O-3 a; dev 1068): an object whose one key is
+    `sizes`, "as-written" or "held". `{}` is the default and normalises away. Returns the good members; every fault is recorded in
+    `col`."""
+    if not isinstance(raw, dict):
+        col.run(_bad, "images", "an object", raw)
+        return {}
+    out = {}
+    for k in raw:
+        if k not in IMAGES_KEYS:
+            col.add("site.json: unknown key 'images.%s'" % k, "images.%s" % k, "unknown key",
+                    "one of: " + ", ".join(IMAGES_KEYS), "remove 'images.%s'" % k)
+    if "sizes" in raw:
+        ok, v = col.run(_one_of, raw["sizes"], "images.sizes", IMAGES_SIZES)
+        if ok:
+            out["sizes"] = v
+    return out
+
+
+def v10_top_check(data, col):
+    """The schema-10 top-level keys of a decoded `site.json` (the caller has refused them below 10), as {key: value} of those
+    that are set: `images` (`_images_check`; `{}` is written away) and `sitemap` ("indexable", the one value). Every fault is
+    recorded in `col`."""
+    out = {}
+    if "images" in data:
+        v = _images_check(data["images"], col)
+        if v:
+            out["images"] = v
+    if "sitemap" in data:
+        ok, v = col.run(_one_of, data["sitemap"], "sitemap", SITEMAP_VALUES)
+        if ok:
+            out["sitemap"] = v
     return out

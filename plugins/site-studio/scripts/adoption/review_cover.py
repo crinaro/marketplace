@@ -28,6 +28,11 @@ THE RULING, built exactly:
    unreadable record each stop with the reason (`CoverRefused`). The parity verdict is read from the record the conversion commit holds
    (`.site-studio/adopt-parity.json`, `adoption.parity.parse_parity_record`).
 
+A PDF THE PERSON VOUCHED FOR (`adopt.py proof --as-is`, dev 1068 design 2.3) is a PDF the gate lists NOT READ on purpose: the commit says "the person vouched for the
+resume PDF", this module reads that back from the clone's history, and the stop says so in place of "fix the PDF or remove it": the privacy review must open it. The
+EQUAL stand-in never applies to it. A review is bound to the digest, which holds the conversion commit's date (the UTC day), so a review made on one day covers an
+`apply` on that day only: every stop that needs a review says when the day ends (`utc_day_note`).
+
 `deploy.py --dry-run` already refuses a build any check_site family finds fault with, so the scans here hold a second time, in this
 module's own call, and what they found is what the row records. THE SEAM (tests only; no flag reaches it): `tool(script, argv, cwd) ->
 (exit code, text)`; the default starts the script as a process, a test calls the script's `main` in this process.
@@ -44,6 +49,7 @@ import time
 
 from adoption.base import PARITY_RECORD_REL, PLUGIN, PlanError, git, gitt
 from adoption.parity import parse_parity_record
+from adoption.resumeproof import VOUCHED_LINE
 from reviews import rows as review_rows
 
 SCRIPTS = os.path.join(PLUGIN, "scripts")
@@ -204,6 +210,20 @@ def standin_findings(records):
         r.get("family") == "privacy" or (r.get("family") == "reachable" and r.get("message") == UNREFERENCED))]
 
 
+def vouched_in(clone):
+    """True when a commit of the clone's recent history says the person vouched for the resume PDF (what `apply` writes for `proof --as-is`)."""
+    return VOUCHED_LINE in gitt(clone, "log", "--format=%B", "-n", "20", check=False)
+
+
+def utc_day_note(epoch=None):
+    """The sentence a stop that needs a review ends with: the review is bound to the UTC day of the conversion commit, so `apply` must run again before the day
+    ends (the clock time is the person's own), or the review has to be made again."""
+    now = time.time() if epoch is None else epoch
+    midnight = (int(now) // 86400 + 1) * 86400
+    return ("run `adopt.py apply` again before 00:00 UTC (%s here), or the review has to be made again"
+            % time.strftime("%H:%M", time.localtime(midnight)))
+
+
 def _image_count(out_dir):
     return sum(1 for _d, _n, names in os.walk(out_dir) for n in names if n.lower().endswith(IMAGE_EXTS))
 
@@ -227,6 +247,9 @@ def scan_built_tree(clone, digest, tool, work):
         raise CoverRefused("%d automated privacy scan finding(s) on the exact built tree: %s%s" % (
             len(hits), shown, "" if len(hits) <= 3 else "; and %d more" % (len(hits) - 3)),
             ["  run /site-studio:review: an agent opens each file and decides what to do about each finding"])
+    if summary.get("pdfsNotRead") and vouched_in(clone):
+        raise CoverRefused("NOT CHECKED: %d PDF(s) in the built tree could not be read by the privacy scan: you vouched for this PDF; the privacy review must open it"
+                           % summary["pdfsNotRead"], ["  run /site-studio:review: an agent opens the PDF and decides what to do about it"])
     if summary.get("pdfsNotRead"):
         raise CoverRefused("NOT CHECKED: %d PDF(s) in the built tree could not be read by the privacy scan; fix the PDF or remove it, then run adopt again" % summary["pdfsNotRead"])
     checked = summary["checked"]
@@ -270,7 +293,7 @@ def cover(clone, repo, digest, tool=None, now=None):
     try:
         row = standin(clone, digest, tool, now)
     except CoverRefused as e:
-        raise CoverRefused(e.reason, lines + e.lines)
+        raise CoverRefused(e.reason, lines + e.lines + ["  " + utc_day_note()])
     s = row["scans"]
     note = ("NO AGENT REVIEW covers digest %s: a stand-in (%s) was recorded in %s. Parity is EQUAL and every automated privacy scan "
             "passed on the exact built tree (%d files scanned, %d images, %d PDFs read); an agent has not opened a file. Run "

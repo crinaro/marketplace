@@ -42,6 +42,14 @@ committed and never published.
 - **It needs Chrome.** With no Chrome it refuses and names the install step.
 - **The build refuses a stale PDF:** if the source changed and the PDF was not remade, the next
   build says so. Remake it here.
+- **The sidecar is the PDF's proof.** The build refuses a resume PDF with no sidecar beside it, and the gate accepts the PDF only when
+  its own text holds at least 95% of the words of the resume page. `resume_pdf.py` checks exactly that on the PDF it prints.
+  A site that comes from another builder has a PDF and no sidecar: `/site-studio:adopt` reads the existing PDF with the plugin's
+  reader, and where it finds 95% of the page's words its `apply` writes the sidecar and **the PDF does not change**
+  (`adopt.py proof` says where it stands). Where the reader finds less (joined letters, hyphens at line ends and languages
+  written without spaces fool it), the answers are the person's and adopt's own: `adopt.py proof --as-is` (the person says the PDF
+  is right; the privacy review then opens it), or `adopt.py proof --print` (a new PDF printed with Chrome from the converted
+  page; visitors then get a different file). Do not write or edit a sidecar by hand.
 - **The PDF's file name is an address.** `site/site.json`'s `resume.pdf` names the file, and it is
   published as `resume/<that name>`. If the person's earlier site published it under another name,
   `/site-studio:adopt` sets `resume.pdf` to that name and renames the committed PDF and its sidecar

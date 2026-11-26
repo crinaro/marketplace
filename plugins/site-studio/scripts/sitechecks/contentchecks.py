@@ -33,9 +33,27 @@ shows. A mixin of `checker.Checker`.
   not show, an unreadable header, a long edge over the cap, the plugin stylesheets' remote loads) hold every file,
   carried or not; an address on a carried page that names a development origin is still `basepath`'s finding. `checker.run` prints the
   `carried:` note, so the skip is never a quiet pass. A tree without the key is judged as before.
+
+  Dated note, 2026-11-25 (design-publish-preflight sections 3.2 and 4, dev 1068; looser only, `tests/test_gate_only_looser.py`):
+  (1) under `site.json` `images: {"sizes": "as-written"}` (schema 10) an <img> of ANY page the gate judges, hand-written pages
+  included on every site kind, need not carry `width` and `height`, and a `srcset` need not carry `sizes`: the gate cannot tell a
+  generated page from a hand-written one, and the old site's own pages are the commonest case. A WRITTEN value must still be
+  true, and one note per page counts what was let through, so it is never quiet. No key: 0.9.0's rules. `held` (review R4, 2026-11-25): the same
+  relief for every <img> WITHOUT `data-ss-held` (a hand page's picture, or a look's that the build did not size: the visitor invariant forbids
+  changing a hand page's markup unasked, so the gate must not ask for it), with the same per-page note; an <img data-ss-held> is the build's
+  own and is held to 0.9.0's rule (a size missing or wrong is refused). An empty `width=""` is as absent under the relief; a value that is
+  not a number ("100%") is refused with the text "has an empty or non-numeric width", which is true, where it was told "no width attribute".
+  (2) "untitled page" is not raised for a PIECE's own title, found from the source (`checker._piece_pages`: the page is
+  `<portfolio>/<slug>/index.html`, `content/<portfolio>/<slug>/index.md` holds a `title` the page's `<title>` begins with, in the
+  repo the gate is given, on a portfolio site); an empty title still is. With no repo, nothing is exempt.
+  (3) under `site.json` `sitemap: "indexable"` (schema 10; section 7) "noindex page that is not a redirect stub" is not raised for a page the
+  build leaves out of search (`page.search_out`) that is carried or whose source is `site/src/<same path>` in the repo the gate is given: the
+  person put it there. One note per such page says so ("left out of search on purpose"). A noindex page with no such source, and every one when
+  there is no repo, is refused as before; a `none` page was never refused, and is only noted. Without the key: as before.
 """
 
 from imaging import plan, sniff
+import os
 import re
 from urllib.parse import urlsplit
 from sitechecks.kinds import BAD_IMAGE_EXTS, IMAGE_EXTS, VIDEO_HOSTS
@@ -46,7 +64,7 @@ from sitechecks.tree import classify
 # not read from `building.constants`: no module of `sitechecks/` imports the builder. Each `.css` of
 # `building.constants.PLUGIN_ASSETS` must be here (tests/test_content_css.py `Schema6Css`).
 PLUGIN_STYLESHEETS = ("site-studio/blocks.css", "site-studio/schema-4.css", "site-studio/schema-5.css",
-                      "site-studio/schema-6.css")
+                      "site-studio/schema-6.css", "site-studio/held.css")
 
 
 class ContentChecks(object):
@@ -57,6 +75,7 @@ class ContentChecks(object):
         fam = "media"
         n = 0
         t = self.t
+        mode = (getattr(self.cfg, "images", None) or {}).get("sizes")       # schema 10 (L1): "as-written", "held" or absent
         for rel in sorted(t.files):
             low = rel.lower()
             if low.endswith(BAD_IMAGE_EXTS):
@@ -71,8 +90,11 @@ class ContentChecks(object):
         for rel, p in sorted(self.pages.items()):
             if rel in self.carried:             # the page as the person wrote it (the dated note)
                 continue
+            unsized = unsized_set = 0           # under `images.sizes` as-written or held: counted in one note, never quiet
             for im in p.imgs:
                 n += 1
+                # relief: as-written, any picture; held, any picture the build did not size (no `data-ss-held`: a hand page's, or a look's that holds none)
+                as_written = mode == "as-written" or (mode == "held" and not im["held"])
                 src = im["src"]
                 if src is None or src == "":
                     self.r.add(fam, rel, "an <img> with no src")
@@ -93,14 +115,23 @@ class ContentChecks(object):
                     if not target.lower().endswith(".svg"):
                         self.r.add(fam, rel, "<img src=%s>: the image header cannot be read" % src)
                     continue
+                bare = False
                 for attr, want in (("width", dims[0]), ("height", dims[1])):
                     v = im[attr]
-                    if v is None or not str(v).isdigit():
+                    if as_written and (v is None or not str(v).strip()):
+                        bare = True             # not carried (an empty `width=""` is as absent): as the old page had it. A WRITTEN value is still judged.
+                    elif v is None:
                         self.r.add(fam, rel, "<img src=%s> has no %s attribute (layout shift)" % (src, attr))
+                    elif not str(v).isdigit():
+                        self.r.add(fam, rel, "<img src=%s> has an empty or non-numeric %s (%r): write the picture's %s in pixels, or leave the attribute "
+                                   "out under images.sizes as-written" % (src, attr, v, attr))
                     elif int(v) != want:
                         self.r.add(fam, rel, "<img src=%s> %s=%s but the file is %d" % (src, attr, v, want))
+                unsized += bare
                 if im["srcset"]:
-                    if not im["sizes"]:
+                    if not im["sizes"] and as_written:
+                        unsized_set += 1
+                    elif not im["sizes"]:
                         self.r.add(fam, rel, "<img src=%s> has a srcset but no sizes attribute" % src)
                     for u, d in parse_srcset(im["srcset"]):
                         kk, rr = classify(u, self.base)
@@ -115,6 +146,10 @@ class ContentChecks(object):
                         elif dd and int(m.group(1)) != dd[0]:
                             self.r.add(fam, rel, "srcset says %s is %sw but the file is %d wide"
                                        % (u, m.group(1), dd[0]))
+            if unsized or unsized_set:
+                self.r.notes.append("media: %s: %d <img> without a width or height and %d srcset without sizes, left as written "
+                                    "(`images.sizes: \"%s\"` in site.json%s)" % (rel, unsized, unsized_set, mode,
+                                     "; a picture the build did not size stays as it is" if mode == "held" else ""))
             for fr in p.iframes:
                 n += 1
                 src = fr.get("src", "")
@@ -153,9 +188,12 @@ class ContentChecks(object):
                     self.r.add(fam, rel, "a link that goes nowhere (href=%r)" % a["href"])
             if rel in self.redirects:
                 continue
-            if p.has_noindex:
+            if p.has_noindex and not self._on_purpose(rel):
                 self.r.add(fam, rel, "noindex page that is not a redirect stub (a draft left in?)")
-            if not p.title.strip() or re.match(r"(?i)^\s*(untitled|document|new page)\b", p.title):
+            # a PIECE's own title is its author's words ("Untitled", "Sans titre": design-publish-preflight section 4, T1; dev 1068): the
+            # word is judged for any page but a piece's, found from the source (`checker._piece_pages`). An EMPTY title is refused for all.
+            if not p.title.strip() or (rel not in self.pieces and
+                                       re.match(r"(?i)^\s*(untitled|document|new page)\b", p.title)):
                 self.r.add(fam, rel, "untitled page")
             if rel != "404.html" and not "".join(p.main_text or p.text).strip() and not p.imgs:
                 self.r.add(fam, rel, "the page has no content")
@@ -164,4 +202,17 @@ class ContentChecks(object):
                 for m in re.finditer(r"(?i)\b(?:https?://)?(localhost|127\.0\.0\.1|0\.0\.0\.0)(?::\d+)?|file://", self.t.text(rel)):
                     self.r.add(fam, rel, "development address %r left in" % m.group(0))
                     break
+        for rel in sorted(self.left_out):       # dated note, 2026-11-25 (3): never a quiet pass
+            if rel in self.carried or self._on_purpose(rel) or not self.pages[rel].has_noindex:
+                self.r.notes.append("unfinished: %s: left out of search on purpose (a `robots` meta says so, `sitemap: \"indexable\"` in "
+                                    "site.json)" % rel)
         self.r.count(fam, len(held))
+
+    def _on_purpose(self, rel):
+        """True when the page `rel` is a noindex page the person put there (design-publish-preflight section 7, dev 1068): `site.json`
+        `sitemap: "indexable"` is set, the page is one the build leaves out of search (`checker.left_out`), and its source is
+        `site/src/<same path>` in the repo the gate is given. With no key, no repo or no such source: False (the page is refused). A CARRIED
+        page never reaches here: the family does not judge it (dated note 2026-11-20)."""
+        if rel not in self.left_out:
+            return False
+        return bool(self.repo) and os.path.isfile(os.path.join(self.repo, "site", "src", *rel.split("/")))

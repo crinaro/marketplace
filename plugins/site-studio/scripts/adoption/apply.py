@@ -30,28 +30,24 @@ import tempfile
 import github_url  # noqa: E402
 import report_issue  # noqa: E402
 
-from adoption import finish, lookperson, referencepropose
-from adoption.accounting import ARCHIVE_REL, archive_path, dump_archive, open_folders, parse_archive, stale_line
-from adoption.base import NeedsAnswer, PARITY_RECORD_REL, PLUGIN, PlanError, Refused, git
-from adoption.spec import CONVERSION_CLASSES, load_spec
-from adoption.classify import _fmt_pct, classify_text, shadow_suffix
-from adoption.tree import Tree, TreeFiles, counterpart_of, inventory
-from adoption.tokens import detect_resume
+from adoption import finish, lookperson, referencepropose, resumeproof
+from adoption.accounting import ARCHIVE_REL, archive_path, dump_archive, parse_archive, stale_line
+from adoption.base import PARITY_RECORD_REL, PlanError, Refused, git
+from adoption.spec import load_spec
+from adoption.tree import Tree, counterpart_of
+from adoption.units import first_line
 from adoption.convert import converted_site_files, old_form_hits
 from adoption.features import infer_kind
-from adoption.parity import (
-    builder_entry, decide_conversions, parity_record_text, preconditions,
-    template_fingerprint,
-)
-from adoption.problems import accept_problems, accept_warnings, broken_chosen
+from adoption.parity import builder_entry, parity_record_text, preconditions
 from adoption.plan import load_plan
 from adoption.engine import compute_engine
 from adoption.outcome import assess, dry_run_line
-from adoption.blockers import is_stray_warning
 from adoption.reports import REPORTS_REL
-from adoption.hookpaths import dangling_hook_paths, process_hooks
+from adoption.hookpaths import dangling_hook_paths
+from adoption.wouldwrite import (          # noqa: F401 -- merge_settings and STARTER_SETTINGS stay reachable here for the tests
+    STARTER_SETTINGS, build_refusals, conversion, held_refusal, merge_settings, snapshot, unlisted,
+)
 
-STARTER_SETTINGS = os.path.join(PLUGIN, "templates", "starter", "dot-claude", "settings.json")
 # Named change S8: pinned word for word in tests/test_adopt.py and the starter's test_repos.
 POINTER_LINE = ("If /site-studio commands are unknown, this session does not have the plugin (cloud "
                 "sessions do not install repo-declared plugins); open the repo on your own computer.")
@@ -59,25 +55,6 @@ BRANCH_PREFIX = "site-studio/adopt-"
 # Named change S2: the app keeps session worktrees inside the repo.
 GITIGNORE_LINES = (".claude/worktrees/", "site/dist/", ".site-studio/review/")
 RULES_HEADING = "## Standing rules carried by adopt"
-
-
-def merge_settings(text, starter_text):
-    """The person's settings plus the plugin's registration and ask rules (design 6.3). Keeps every
-    key and rule already there. Returns the settings dict (hooks untouched)."""
-    cur = json.loads(text) if text else {}
-    st = json.loads(starter_text)
-    cur.setdefault("extraKnownMarketplaces", {})
-    for k, v in st["extraKnownMarketplaces"].items():
-        cur["extraKnownMarketplaces"].setdefault(k, v)
-    cur.setdefault("enabledPlugins", {})
-    for k, v in st["enabledPlugins"].items():
-        cur["enabledPlugins"].setdefault(k, v)
-    perms = cur.setdefault("permissions", {})
-    ask = perms.setdefault("ask", [])
-    for rule in st["permissions"]["ask"]:
-        if rule not in ask:
-            ask.append(rule)
-    return cur
 
 
 _ENGINE_HEADING = re.compile(
@@ -221,25 +198,33 @@ def commit_object(repo, tree, base, message):
         git(repo, "read-tree", base, env=env)
         lines = []
         for path in sorted(tree.removed):
-            if "\n" in path or "\t" in path:
-                raise Refused("a path contains a tab or newline: %r; rename that file with `git mv` and commit, then "
-                              "run adopt again" % path)
+            refuse_path(path)
             lines.append("0 %s\t%s" % ("0" * 40, path))
         for path in sorted(tree.writes):
-            if "\n" in path or "\t" in path:
-                raise Refused("a path contains a tab or newline: %r; rename that file with `git mv` and commit, then "
-                              "run adopt again" % path)
+            refuse_path(path)
             sha = git(repo, "hash-object", "-w", "--stdin", input=tree.writes[path]).decode().strip()
             lines.append("%s %s\t%s" % (tree.mode(path), sha, path))
         if lines:
             git(repo, "update-index", "--index-info", input=("\n".join(lines) + "\n").encode("utf-8"), env=env)
         new_tree = git(repo, "write-tree", env=env).decode().strip()
-        who = git(repo, "var", "GIT_COMMITTER_IDENT", check=False)
-        if who.returncode != 0:
-            raise Refused("git has no committer identity; set user.name and user.email and run apply again")
+        refuse_no_identity(repo)
         return git(repo, "commit-tree", new_tree, "-p", base, "-m", message).decode().strip()
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
+
+
+def refuse_path(path):
+    """Raises Refused for a path the commit's index lines cannot carry (a tab or newline in it). One function for `commit_object` and for `check`, which asks it
+    of every path the commit would hold (dev 1068, review R1, item 2)."""
+    if "\n" in path or "\t" in path:
+        raise Refused("a path contains a tab or newline: %r; rename that file with `git mv` and commit, then "
+                      "run adopt again" % path)
+
+
+def refuse_no_identity(repo):
+    """Raises Refused when git has no committer identity (read-only: `git var`). One function for `commit_object` and for `check`."""
+    if git(repo, "var", "GIT_COMMITTER_IDENT", check=False).returncode != 0:
+        raise Refused("git has no committer identity; set user.name and user.email and run apply again")
 
 
 def _checked_plan(repo, base):
@@ -258,134 +243,12 @@ def _checked_plan(repo, base):
     return plan
 
 
-def _decided_conversions(tree, data, plan, kw):
-    """Which classes of conversion are made. Returns (rows, held, only); raises Refused when a chosen conversion breaks the kept builder."""
-    # which classes of conversion are made: one that parity measured as changing a page, or what the person's
-    # own builder publishes, is NOT made (design-site-fidelity section 5.0.3): the site stays on its builder
-    try:
-        _all_files, all_notes = converted_site_files(tree, data, plan["paper"], plan["folders"], plan.get("siteKind"), **kw)
-        rows = decide_conversions(all_notes, plan["parity"], template_fingerprint(tree), plan["convert"])
-    except Refused:
-        rows = []
-    held = set(r["class"] for r in rows if r["status"] == "you decide")
-    only = None if not held else set(c for c, _l, _w in CONVERSION_CLASSES if c not in held)
-    # dev #890, B1: a conversion the person CHOSE, on which P1 showed the kept builder exits non-zero, is not written
-    # while parity is not EQUAL or ACCEPTED (the builder stays the publisher, and the tree would break it). `--dry-run`
-    # asks `prepare` too, so its verdict is the same refusal.
-    broken = broken_chosen(rows, plan)
-    if broken:
-        raise Refused("%s is chosen, but your own builder FAILS on the tree it makes (%s) and parity is %s: apply will not "
-                      "write a conversion that breaks the builder that stays your publisher. `adopt.py convert %s --keep` "
-                      "leaves it as written (then `adopt.py parity` measures the tree without it); or fix the builder, run `adopt.py parity` again, and accept it once parity "
-                      "is EQUAL or ACCEPTED" % (broken[0]["class"], broken[0]["failure"],
-                                                (plan["parity"] or {}).get("verdict", "not run"), broken[0]["class"]))
-    return rows, held, only
-
-
-def _build_refusals(tree, data, plan, only, kw, dispositions):
-    """What the plugin's own build refuses in the tree adopt would write, as problems."""
-    # what the plugin's own build refuses in the tree adopt would write (before anything is written)
-    refusals, acc = accept_problems(tree, data, plan["paper"], plan["folders"], plan.get("siteKind"), only, **kw)
-    refusals = refusals + accept_warnings(acc)
-    if dispositions:             # a stray file is disposed by the file accounting, never also a refusal (design R4 row 16 (a))
-        refusals = [p for p in refusals if not is_stray_warning(p)]
-    return refusals
-
-
-def _refuse_undecided(tree, infos, decisions, plan, dry_run):
-    """Every file proposed for removal needs a decision, and the resume's paper size must be known. Raises Refused or NeedsAnswer."""
-    # 1. every file proposed for removal needs a decision
-    # An undecided PARTIAL is KEPT (the skill says so: it is removable only when its units are decided or parity
-    # passes). An undecided DUPLICATE or AMBIGUOUS proposes a removal, so a real apply refuses; a dry run previews
-    # with them (it writes nothing) and says what a real apply would do (F3).
-    undecided = [i["path"] for i in infos if i["class"] in ("DUPLICATE", "AMBIGUOUS")
-                 and (decisions.get(i["path"]) or {}).get("removal") is None]
-    if undecided and not dry_run:
-        raise Refused("no decision yet for %d file(s), first %s: run `adopt.py confirm <path>` or `--keep`"
-                      % (len(undecided), undecided[0]))
-    resume = detect_resume(tree)
-    paper = plan["paper"] or resume["paper"]
-    if resume["needsAnswer"] and paper is None:
-        raise NeedsAnswer("resume.paper needs your answer: the resume PDF's paper size cannot be read from it; "
-                          "run `adopt.py paper Letter` or `adopt.py paper A4`")
-
-
-def _collect_removals(spec, tree, infos, decisions, plan, parity):
-    """The files a decision removes, what is kept and why, the facts to move and the standing-rule units. Raises Refused for a decision that is not safe to act on."""
-    removals, kept, facts, reasons, unit_facts, rule_units = {}, [], [], {}, [], []
-    for i in infos:
-        d = decisions.get(i["path"]) or {}
-        cls = i["class"]
-        if cls in ("CUSTOM", "MIXED"):
-            if cls == "CUSTOM":
-                kept.append((i["path"], "no plugin counterpart" + shadow_suffix(i)))
-            continue
-        if d.get("removal") == "keep":
-            kept.append((i["path"], "kept by your decision (%s, score %s)" % (cls, _fmt_pct(i["score"]))
-                         + shadow_suffix(i)))
-            continue
-        if d.get("removal") is None:
-            kept.append((i["path"], "kept by default (no decision; %s, score %s)%s" % (
-                cls, _fmt_pct(i["score"]), "" if cls == "PARTIAL" else
-                ": a real apply refuses until you decide, so this is a preview") + shadow_suffix(i)))
-            continue
-        # a decision to remove
-        eff = i
-        if cls == "AMBIGUOUS":
-            if not d.get("as"):
-                raise Refused("%s is AMBIGUOUS between %s: say which with `adopt.py confirm %s --as <capability>`"
-                              % (i["path"], " and ".join(c for c, _s in i["candidates"]), i["path"]))
-            eff = classify_text(spec, i["path"], i["kind"], tree.text(i["path"]), as_cap=d["as"])
-            if eff["capability"] is None:
-                raise Refused("%s does not match %s; pass another capability to `adopt.py confirm %s --as`, or keep the file "
-                              "with `adopt.py confirm %s --keep`" % (i["path"], d["as"], i["path"], i["path"]))
-        prose = i["kind"] in ("agent", "command", "skill")
-        if prose:
-            if not d.get("reviewed"):
-                raise Refused("the facts in %s are unreviewed: read it, record what is yours with `adopt.py "
-                              "unit`/`fact`, then run `adopt.py reviewed %s`; nothing is removed before its facts "
-                              "are moved" % (i["path"], i["path"]))
-            for u in eff["residual_units"]:
-                ud = (d.get("units") or {}).get(u["id"])
-                if ud is None:
-                    raise Refused("%s: unit %s is not dispositioned (person data, or behaviour to keep): %s; give it a "
-                                  "disposition with `adopt.py unit %s %s person-data|keep|rule`"
-                                  % (i["path"], u["id"], u["text"].split("\n")[0][:60], i["path"], u["id"]))
-                if ud["disposition"] == "keep":
-                    raise Refused("%s: unit %s is marked keep, so the file stays; run `adopt.py confirm %s --keep`"
-                                  % (i["path"], u["id"], i["path"]))
-                if ud["disposition"] == "rule":
-                    rule_units.append({"source": i["path"], "id": u["id"], "text": u["text"]})
-                    continue
-                unit_facts.append({"source": i["path"], "kind": ud["kind"], "text": u["text"], "name": ud.get("name")})
-        else:
-            if spec.caps[eff["capability"]].get("needsParity"):
-                if not parity or parity["verdict"] not in ("EQUAL", "MARKUP-ONLY", "ACCEPTED"):
-                    raise Refused("%s is a local builder file and parity is %s: it stays (run `adopt.py parity`)"
-                                  % (i["path"], (parity or {}).get("verdict", "not run")))
-            elif eff["class"] == "PARTIAL":
-                raise Refused("%s is PARTIAL (residual %s) and nothing says its extra behaviour is safe to drop: "
-                              "run `adopt.py confirm %s --keep`" % (i["path"], _fmt_pct(eff["residual"]), i["path"]))
-        removals[i["path"]] = eff
-        reasons[i["path"]] = ("matched by what it does: %s (score %s, residual %s; signals: %s)"
-                              % (eff["capability"], _fmt_pct(eff["score"]), _fmt_pct(eff["residual"]),
-                                 ", ".join(eff["signals"])))
-    for fa in plan["facts"]:
-        if fa["source"] in removals:
-            facts.append(fa)
-    facts = unit_facts + facts
-    return removals, kept, facts, reasons, rule_units
-
-
 def _write_site(tree, data, plan, only, kw, held, rows, infos, base, parity):
     """Write the converted site files and the parity record into the tree. Returns (notes, record)."""
     try:
         site_files, notes = converted_site_files(tree, data, plan["paper"], plan["folders"], plan.get("siteKind"), only, **kw)
     except Refused as e:
-        if held and str(e).startswith("the converted site.json is not valid"):
-            raise Refused("%s; it needs a conversion that is held back (%s), so the plugin's build cannot read it yet: settle "
-                          "that first (`adopt.py check` says why)" % (e, ", ".join(sorted(held))))
-        raise
+        raise held_refusal(e, held)
     notes["held"] = [r for r in rows if r["status"] == "you decide"]
     for p, blob in sorted(site_files.items()):
         tree.write(p, blob)
@@ -471,34 +334,11 @@ def _carry_claude_and_gitignore(tree, rule_units, changes):
     return claude_old, claude_new
 
 
-def _settings_and_hooks(tree, spec, removals, kept, by_path, changes):
-    """Merge the plugin's registration into .claude/settings.json and handle hooks that name a removed file. Returns (settings, hook_list)."""
-    # settings and hooks
-    cap_of = dict((p, e["capability"]) for p, e in removals.items())
-    st_old = tree.text(".claude/settings.json") if tree.exists(".claude/settings.json") else ""
-    with open(STARTER_SETTINGS, "r", encoding="utf-8") as fh:
-        starter = fh.read()
-    try:
-        settings = merge_settings(st_old, starter)
-    except ValueError:
-        raise Refused(".claude/settings.json is not valid JSON, so adopt cannot merge into it; fix the JSON in that file, "
-                      "then run adopt again")
-    hook_list = []
-    for _round in range(2):
-        trial = json.loads(json.dumps(settings))
-        trial, hook_list, blocked = process_hooks(trial, set(removals), cap_of, spec)
-        if not blocked:
-            break
-        for p in sorted(blocked):
-            removals.pop(p, None)
-            kept.append((p, "a hook still calls it and no plugin hook replaces it" + shadow_suffix(by_path.get(p, {}))))
-    else:
-        raise Refused("hooks still name files adopt would remove; keep those files with `adopt.py file <path> keep`, or "
-                      "remove the hook lines that call them from .claude/settings.json")
-    settings = trial
-    tree.write(".claude/settings.json", json.dumps(settings, indent=2, ensure_ascii=False) + "\n")
+def _write_settings(tree, conv, changes):
+    """Write the settings the conversion planned (`wouldwrite.hook_plan`) into the tree."""
+    tree.write(".claude/settings.json", json.dumps(conv.hook_settings, indent=2, ensure_ascii=False) + "\n")
     changes.append(".claude/settings.json: plugin registration and ask rules added; your own rules kept")
-    return settings, hook_list
+    return conv.hook_settings, conv.hook_list
 
 
 def _archive_removals(tree, removals, changes, moved):
@@ -540,9 +380,26 @@ def _archive_removals(tree, removals, changes, moved):
                        "built or read)" % (len(archived_here), ", ".join("%s -> %s" % m for m in archived_here), ARCHIVE_REL))
 
 
+def covered_units(decisions, removals):
+    """`[{"source", "id", "text"}]`: each unit the person answered `covered` ("the plugin covers this; drop it") in a file `apply` removes, and every residual
+    unit of a PARTIAL script they confirmed with `--covered`, by file then id. The file is archived whole, so the words stay in `archive/`; the commit
+    lists each of these by file and first line (dev 1068, S6)."""
+    out = []
+    for path in sorted(removals):
+        d = decisions.get(path) or {}
+        ids = None if d.get("covered") else set(uid for uid, u in (d.get("units") or {}).items() if u.get("disposition") == "covered")
+        out += [{"source": path, "id": u["id"], "text": u["text"]} for u in removals[path].get("residual_units") or []
+                if ids is None or u["id"] in ids]
+    return out
+
+
 def _refuse_stray_rules(decisions, removals):
-    """A standing rule travels only out of an agent, command or skill file adopt removes."""
+    """A standing rule, and a unit the plugin covers, travel only out of a file adopt removes: a drop goes with the file it is in (dev 1068, S6)."""
     for path, d in sorted(decisions.items()):
+        dropped = sorted(uid for uid, u in (d.get("units") or {}).items() if u.get("disposition") == "covered")
+        if (dropped or d.get("covered")) and path not in removals:
+            raise Refused("%s: %s marked covered by the plugin, but the file stays; a drop travels only with the file it is in. Mark the unit "
+                          "person-data or keep, or confirm the file for removal" % (path, ("unit %s is" % dropped[0]) if dropped else "the file is"))
         ruled = sorted(uid for uid, u in (d.get("units") or {}).items() if u.get("disposition") == "rule")
         if not ruled:
             continue
@@ -555,15 +412,14 @@ def _refuse_stray_rules(decisions, removals):
                           "standing rule" % (path, ruled[0]))
 
 
-def _assess_outcome(repo, tree, base, data, spec, plan, decisions, parity, refusals, notes, dry_run):
-    """Record the leftovers in `notes` and assess the outcome. Returns (engine, outcome)."""
+def _assess_outcome(repo, tree, base, data, spec, plan, decisions, parity, refusals, notes, snap):
+    """Record the leftovers in `notes` and assess the outcome over `snap`, the files the checks ran on. Returns (engine, outcome)."""
     notes["oldFormHits"] = old_form_hits(tree, notes["olds"])
     notes["refusals"] = [p.line() for p in refusals]
-    # the outcome (design 8 AO): blocked or ready, every cause a row, the publish preconditions asked of `deploy.py --preflight`
+    # the outcome (design 8 AO): blocked or ready, every cause a row, the publish checks asked of the one converted tree (dev 1068)
     engine = compute_engine(Tree(repo, base), data, spec, decisions)
-    snapshot = dict((q, tree.read(q)) for q in tree.paths() if q.startswith(("site/", "content/")) or q == ".site-studio/addresses.json")
-    outcome = assess(repo, plan, parity, refusals, engine, report_issue.plugin_version(), reports_at(tree),
-                     snapshot=snapshot, run_preflight=not dry_run)
+    outcome = assess(repo, plan, parity, refusals, engine, report_issue.plugin_version(), reports_at(tree), snapshot=snap.files,
+                     run_preflight=True)
     notes["outcome"] = outcome
     return engine, outcome
 
@@ -622,46 +478,67 @@ def _write_handoff(tree, date, basis, base, removals, moved, kept, outcome):
     return branch, handoff
 
 
-def prepare(repo, date, spec=None, dry_run=False):
-    """Everything apply will commit, computed without writing anything. Raises Refused. `dry_run` previews with
-    undecided files: a real apply refuses on an undecided DUPLICATE or AMBIGUOUS, a dry run keeps it and says so."""
-    spec = spec or load_spec()
-    basis, tree, data = preconditions(repo)
-    base, before = basis.sha, set(tree.paths())
-    plan = _checked_plan(repo, base)
-    infos = inventory(tree, spec)
-    by_path = dict((i["path"], i) for i in infos)
-    decisions = plan["files"]
-    # the measured settings, and the dispositions the last `parity` measured (design 8: every class measured, every file accounted
-    # for); what `parity` did not measure is not written
-    settings = referencepropose.taken(plan.get("settings"), plan["parity"])      # dev 1061: a measured layout waits until site-studio publishes
-    measured = plan["parity"] or {}
-    dispositions = (measured.get("accounting") or {}).get("dispositions") or None
-    plan = dict(plan, folders=open_folders(plan["folders"], tree.paths(), dispositions))      # F1: the archive already settled these
-    persons = dict((p, e["disposition"]) for p, e in decisions.items() if e.get("disposition"))
-    kw = {"settings": settings, "dispositions": dispositions, "persons": persons, "hints": measured.get("hints") or None}
-    rows, held, only = _decided_conversions(tree, data, plan, kw)
-    refusals = _build_refusals(tree, data, plan, only, kw, dispositions)
-    _refuse_undecided(tree, infos, decisions, plan, dry_run)
-    parity = plan["parity"]
-    removals, kept, facts, reasons, rule_units = _collect_removals(spec, tree, infos, decisions, plan, parity)
+def stage(tree, data, plan, conv, snap, proof, base, date):
+    """`prepare`'s writes and every refusal among them, in `prepare`'s order, over `tree` (a basis tree nothing has written to) and the conversion `conv`
+    (`wouldwrite.conversion`) and `snap` (`wouldwrite.snapshot`, with the resume proof's sidecar given to it). Raises Refused or PlanError. Returns {"moved",
+    "notes", "changes", "claude", "settings", "hook_list"}. `prepare` runs it, and so does `check` (`applyrefusals`), over a tree of its own: the one place the
+    refusals of steps 2 to 4 are made, so what `check` says is what `apply` meets (dev 1068, review R1, item 2)."""
+    before = set(tree.paths())
+    plan, kw, only, held, rows = conv.plan, conv.kw, conv.only, conv.held, conv.rows
+    decisions, parity = conv.decisions, plan["parity"]
+    removals, rule_units = conv.removals, conv.rule_units
     # 2. data files first
-    moved = write_facts(tree, facts, date)
+    moved = write_facts(tree, conv.facts, date)
     # 3. config second
-    notes, record = _write_site(tree, data, plan, only, kw, held, rows, infos, base, parity)
+    notes, record = _write_site(tree, data, plan, only, kw, held, rows, conv.infos, base, parity)
     notes["referenceLines"] = referencepropose.lines(notes.get("referenceLayout"), plan.get("settings"), parity)     # dev 1061: every word, before the yes
     changes = _site_changes(tree, notes, record, plan)
+    if proof.sidecar is not None:
+        tree.write(proof.side, proof.sidecar)                  # the PDF itself is never touched: only the proof beside it is new
+        changes.append(proof.commit_line())
     claude_old, claude_new = _carry_claude_and_gitignore(tree, rule_units, changes)
-    settings, hook_list = _settings_and_hooks(tree, spec, removals, kept, by_path, changes)
+    settings, hook_list = _write_settings(tree, conv, changes)
     # 4. removals last
     _archive_removals(tree, removals, changes, dict((a, b) for a, b in notes["archived"] if b not in before))
     _refuse_stray_rules(decisions, removals)
+    notes["covered"] = covered_units(decisions, removals)       # dev 1068, S6: listed in the commit by file and first line, never dropped unsaid
     post = set(tree.paths())
     dangling = dangling_hook_paths(settings, post)
     if dangling:
         raise Refused("a hook would still name %s, which is not in the new tree; apply finished nothing"
                       % ", ".join(sorted(set(p for _e, p in dangling))))
-    engine, outcome = _assess_outcome(repo, tree, base, data, spec, plan, decisions, parity, refusals, notes, dry_run)
+    off = unlisted(tree, snap.files)
+    if off:                       # the list the person was shown must never be shorter than the commit (dev 1068, design 1.1)
+        raise Refused("the plugin's own list of what would be published does not hold %d file(s) this run is about to commit (first: %s); "
+                      "nothing was written. This is a plugin fault: run `adopt.py report`" % (len(off), off[0]))
+    return {"moved": moved, "notes": notes, "changes": changes, "claude": (claude_old, claude_new), "settings": settings, "hook_list": hook_list}
+
+
+def refuse_placeholder(proof):
+    """Raises Refused when the resume proof the plugin made is its own stand-in (a plugin fault: nothing is written)."""
+    if proof.sidecar is not None and resumeproof.is_stand_in(proof.sidecar):
+        raise Refused("the resume proof the plugin made is a placeholder; nothing was written. This is a plugin fault: run `adopt.py report`")
+
+
+def prepare(repo, date, spec=None, dry_run=False):
+    """Everything apply will commit, computed without writing anything. Raises Refused. `dry_run` previews with
+    undecided files: a real apply refuses on an undecided DUPLICATE or AMBIGUOUS, a dry run keeps it and says so."""
+    spec = spec or load_spec()
+    basis, tree, data = preconditions(repo)
+    base = basis.sha
+    plan = _checked_plan(repo, base)
+    conv = conversion(tree, data, plan, spec, "dry" if dry_run else "apply")         # dev 1068: the one converted tree every stage asks about
+    plan, kw, only = conv.plan, conv.kw, conv.only
+    snap = snapshot(conv)
+    proof = resumeproof.prove(snap.files, resumeproof.vouched_sha(plan))              # dev 1068, S5: the resume PDF's proof, made once, written in the one commit
+    refuse_placeholder(proof)
+    snap.files = resumeproof.with_sidecar(snap.files, proof)
+    refusals = build_refusals(tree, data, plan, only, kw, conv.dispositions)
+    decisions, parity = conv.decisions, plan["parity"]
+    removals, kept, reasons = conv.removals, conv.kept, conv.reasons
+    st = stage(tree, data, plan, conv, snap, proof, base, date)
+    moved, notes, changes, hook_list, (claude_old, claude_new) = st["moved"], st["notes"], st["changes"], st["hook_list"], st["claude"]
+    engine, outcome = _assess_outcome(repo, tree, base, data, spec, plan, decisions, parity, refusals, notes, snap)
     _outcome_changes(tree, notes, outcome, changes)
     branch, handoff = _write_handoff(tree, date, basis, base, removals, moved, kept, outcome)
     message = build_message(date, basis, removals, reasons, spec, moved, changes, hook_list, kept, parity, notes)
@@ -672,13 +549,14 @@ def prepare(repo, date, spec=None, dry_run=False):
 
 
 def reports_at(tree):
-    """The reports record at the basis, or []."""
+    """The reports record at the basis, or [] when there is none. A record this plugin cannot read is a refusal, as `report` makes it
+    (dev 1068, design 1.3): reading it as empty would write a new one over it."""
     if not tree.exists(REPORTS_REL):
         return []
     try:
         return report_issue.parse_reports(tree.text(REPORTS_REL))
-    except report_issue.ReportsError:
-        return []
+    except report_issue.ReportsError as e:
+        raise Refused("%s: %s; edit the file, or restore the committed copy from an earlier commit" % (REPORTS_REL, e))
 
 
 def kind_change_line(tree, confirmed):
@@ -715,6 +593,9 @@ def build_message(date, basis, removals, reasons, spec, moved, changes, hook_lis
         L.append("- (nothing)")
     L += ["", "Moved data (from | to):"]
     L += ["- %s | %s" % (a, b) for a, b in moved] or ["- (nothing)"]
+    if notes.get("covered"):                          # dev 1068, S6: each unit you said the plugin covers, told by its own words; the file is archived whole
+        L += ["", "Covered by the plugin (dropped; the whole file is archived, so these words stay in archive/):"]
+        L += ["- %s | %s | %s" % (c["source"], c["id"], first_line(c["text"])) for c in notes["covered"]]
     L += ["", "Transformed config:"] + ["- %s" % c for c in changes]
     L += ([""] + notes["referenceLines"]) if notes.get("referenceLines") else []
     if notes.get("oldFormHits"):
@@ -744,7 +625,9 @@ def build_message(date, basis, removals, reasons, spec, moved, changes, hook_lis
     L += ([""] + out["noLanding"]) if out and out.get("noLanding") else []          # N1: every no-landing file by path
     L += ([""] + out["undisposedLines"]) if out and out.get("undisposedLines") else []        # 4.6: and the undisposed ones, by reason
     if out:
-        L += ["", "Outcome: %s%s" % ("blocked" if out["blocked"] else "every check passed",
+        ran, unasked = out.get("checks") or (0, 0)
+        L += ["", "Outcome: %s%s" % ("blocked" if out["blocked"] else ("every check passed" if not unasked else
+                                                                           "%d check(s) passed, %d not checked" % (ran, unasked)),
                                        (" -- " + "; ".join(out["lines"])) if out["lines"] else
                                        ("" if out["blocked"] else "; the old builder still publishes until site-studio has "
                                         "published and archived it"))]

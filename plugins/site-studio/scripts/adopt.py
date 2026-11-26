@@ -3,10 +3,11 @@
 """adopt.py -- convert a dev repo that carries its own copy of this plugin's tools (dev #835,
 design 6.4; named changes S2, S8, S9, S10 (round 1), M9, M13). Python 3.9, standard library only.
 
-    adopt.py [--repo R] check
+    adopt.py [--repo R] check [--online] [--all]
     adopt.py [--repo R] inventory [--json]
-    adopt.py [--repo R] confirm PATH [--keep] [--as CAPABILITY]
-    adopt.py [--repo R] unit PATH UNIT_ID {person-data|keep|rule} [--kind context|voice|rule] [--name SLUG]
+    adopt.py [--repo R] confirm PATH [--keep | --covered] [--as CAPABILITY]
+    adopt.py [--repo R] unit PATH UNIT_ID {person-data|keep|rule|covered} [--kind context|voice|rule] [--name SLUG]
+    adopt.py [--repo R] unit PATH --rest covered
     adopt.py [--repo R] fact PATH --kind context|voice|rule --text TEXT [--name SLUG]
     adopt.py [--repo R] reviewed PATH
     adopt.py [--repo R] paper {Letter|A4}
@@ -15,6 +16,7 @@ design 6.4; named changes S2, S8, S9, S10 (round 1), M9, M13). Python 3.9, stand
     adopt.py [--repo R] kind {portfolio|hub|custom}
     adopt.py [--repo R] file PATH {archive|draft|keep|engine} | --clear
     adopt.py [--repo R] setting NAME VALUE | --clear
+    adopt.py [--repo R] proof [--as-is | --print]
     adopt.py [--repo R] parity [--accept] [--keep DIR] [--json]
     adopt.py [--repo R] remeasure [--accept]
     adopt.py [--repo R] apply [--date YYYY-MM-DD] [--dry-run]
@@ -37,6 +39,18 @@ writes, publishes and pushes nothing.
 
 THE PUBLIC REPO IS TOUCHED ONLY BY STEP 3, AND ONLY THROUGH `deploy.py`. `adopt.py` never imports it (an entry point): `apply` runs
 it as a subprocess (`adoption/publish.py`). Steps 1 and 2 read the public repo (one clone, `gh` GETs) and write nothing to it.
+
+THE PUBLISH LIST (dev 1068). `check`, `inventory`, `parity`, `apply --dry-run` and `apply` ask the same publish checks of the ONE converted tree
+(`adoption/wouldwrite.py`: what `apply` commits under site/ and content/) and print the same list, grouped by who can fix each finding (adopt, the site, you,
+the plugin) with its fix (`adoption/publishchecks.py`, `publishfixes.py`). After a `parity`, `check` exits 1 with "can be converted, but the publish would
+refuse it: N finding(s)" when the list is not empty; before one the list is for the plugin's default look and changes no exit code. `check --online` also asks
+the public repo, its Pages settings, its published addresses and the staged tree (reads only), and prints what `apply` can still stop on; `--all` lists
+every page of every finding. A check that could not run is a `not checked` row, never a pass.
+
+THE RESUME PROOF (dev 1068, design 2; `adoption/resumeproof.py`). A converted site's resume PDF has no sidecar proving it against the resume page, and the build
+refuses a PDF without one. Where the plugin's reader finds the bound's share (95%) of the resume page's words in the EXISTING PDF, `apply` writes the real sidecar
+in its one commit and the PDF never changes. `proof` prints where it stands; `proof --as-is` is the person's word for a PDF the reader cannot vouch for (the
+privacy review then opens it); `proof --print` prints a new PDF with Chrome.
 
 EXIT CODES (every verb). 0 done: `apply` COMPLETED (its first line says `adopt completed`), or a dry run, or any other verb that did
 what was asked. 1 refused: the line says what to do. 2 usage, or `report` found a report it would not file. 3 needs an
@@ -75,19 +89,25 @@ def _build_parser():
     ap = argparse.ArgumentParser(prog="adopt.py", allow_abbrev=False)
     ap.add_argument("--repo", default=os.getcwd())
     sub = ap.add_subparsers(dest="cmd")
-    sub.add_parser("check")
+    s = sub.add_parser("check")
+    s.add_argument("--online", action="store_true", help="also ask the public repo, its Pages settings and its published addresses (reads, through gh and the network; changes nothing)")
+    s.add_argument("--all", action="store_true", help="list every page of every finding (the default lists five and says how many more)")
     s = sub.add_parser("inventory")
     s.add_argument("--json", action="store_true")
     s = sub.add_parser("confirm")
     s.add_argument("path")
     s.add_argument("--keep", action="store_true")
     s.add_argument("--as", dest="as_cap")
+    s.add_argument("--covered", action="store_true", help="for a PARTIAL script: the plugin covers what it adds, so it is removed with the rest (the same answer as "
+                                                           "`unit ... covered`, for the whole file); never for a local builder, which needs parity")
     s = sub.add_parser("unit")
     s.add_argument("path")
-    s.add_argument("unit_id")
-    s.add_argument("disposition", choices=UNIT_DISPOSITIONS)
+    s.add_argument("unit_id", nargs="?")
+    s.add_argument("disposition", choices=UNIT_DISPOSITIONS, nargs="?")
     s.add_argument("--kind", choices=FACT_KINDS)
     s.add_argument("--name")
+    s.add_argument("--rest", choices=("covered",), help="`--rest covered`: answer every unit of the file not answered yet, printing each one's first line first "
+                                                         "(an option with a value, so Python 3.9's argparse reads it as 3.12's does)")
     s = sub.add_parser("fact")
     s.add_argument("path")
     s.add_argument("--kind", choices=FACT_KINDS, required=True)
@@ -127,9 +147,14 @@ def _build_parser():
                                                         "next parity measures it again")
     s = sub.add_parser("setting", allow_abbrev=False)
     s.add_argument("name", help="a measured setting: look, featuredFrom, sort.<portfolio>, nav.home, resume.headings, cardLabels, "
-                                "cardNumber, backLink or view.<portfolio>")
+                                "cardNumber, backLink, view.<portfolio>, and (0.10.0) images.sizes, sitemap or blankMeta.<portfolio>")
     s.add_argument("value", nargs="?", help="what you choose for it (a chosen value is kept and never measured)")
     s.add_argument("--clear", action="store_true", help="forget the chosen value: the next parity measures it again")
+    s = sub.add_parser("proof", allow_abbrev=False)
+    s.add_argument("--as-is", action="store_true", help="you say this resume PDF is right, for one the plugin's reader finds too little in or cannot read: apply writes its proof "
+                                                         "and the commit says you vouched; the privacy review must open the PDF; a new PDF voids it")
+    s.add_argument("--print", dest="print_", action="store_true", help="print a new resume PDF from the converted resume page with Chrome and copy only the PDF to its "
+                                                                       "path (needs this checkout's HEAD to be the basis, a parity, and resume.paper answered)")
     s = sub.add_parser("remeasure")
     s.add_argument("--accept", action="store_true")
     s.add_argument("--keep", metavar="DIR", help="leave the two builds and the pictures of each page that differs in DIR")
@@ -140,6 +165,17 @@ def _build_parser():
     return ap
 
 
+def _unit_args(ap, args):
+    """`unit PATH UNIT_ID DISPOSITION`, or `unit PATH --rest covered`: two shapes, one usage error (dev 1068)."""
+    if args.rest:
+        if args.disposition is not None or args.unit_id is not None:
+            ap.error("unit PATH --rest covered takes no unit id and no other answer: answer one unit with its id and its disposition")
+        args.unit_id = None
+        args.disposition = "covered"
+    elif args.unit_id is None or args.disposition is None:
+        ap.error("unit takes PATH UNIT_ID DISPOSITION (%s), or PATH --rest covered" % ", ".join(UNIT_DISPOSITIONS))
+
+
 def main(argv=None, hooks=None):
     """`hooks` is the tests' seam for `apply` (`deploy`, `gh`, `dev_slug`: adoption/publish.py); the command line has none."""
     rc = platform_check.windows_refusal_rc("adopt.py")
@@ -147,6 +183,8 @@ def main(argv=None, hooks=None):
         return rc
     ap = _build_parser()
     args = ap.parse_args(argv)
+    if args.cmd == "unit":
+        _unit_args(ap, args)
     repo = os.path.abspath(args.repo)
     try:
         if args.cmd is None:

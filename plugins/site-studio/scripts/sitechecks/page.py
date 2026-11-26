@@ -47,6 +47,7 @@ class Page(HTMLParser):
         self._cur_a = None
         self.inline_style_attrs = []
         self.has_noindex = False
+        self.robots_words = set()    # the lower-cased, comma-separated words of every `robots` meta (`search_out`, dev 1068)
 
     # -- parsing ---------------------------------------------------------------------------
     def handle_decl(self, decl):
@@ -75,8 +76,10 @@ class Page(HTMLParser):
             self.metas.append(a)
             if a.get("content") and (a.get("name") or a.get("property")):
                 self.attr_text.append(a["content"])
-            if a.get("name", "").lower() == "robots" and "noindex" in a.get("content", "").lower():
-                self.has_noindex = True
+            if a.get("name", "").lower() == "robots":
+                self.robots_words.update(w.strip().lower() for w in a.get("content", "").split(","))
+                if "noindex" in a.get("content", "").lower():
+                    self.has_noindex = True
         elif tag == "link":
             self.linktags.append(a)
         elif tag == "base":
@@ -90,6 +93,7 @@ class Page(HTMLParser):
             self.imgs.append({"src": a.get("src"), "alt": a.get("alt"), "width": a.get("width"),
                               "height": a.get("height"), "loading": a.get("loading"),
                               "srcset": a.get("srcset"), "sizes": a.get("sizes"),
+                              "held": "data-ss-held" in a,            # the tag the look's own picture part writes (design-publish-preflight 3.2)
                               "in_main": bool(self._main_depth)})
         elif tag == "iframe":
             self.iframes.append(a)
@@ -169,6 +173,26 @@ class Page(HTMLParser):
     def fused_text(self):
         """The same text with no separator, for a private term split across inline tags."""
         return "".join(self.text)
+
+
+def main_words(page):
+    """The words rule 2 compares a printed PDF against: the page's <main> text, the 'Download as PDF' caption excluded, joined
+    with a space. ONE function: the site gate (`privacy.py`) and `resume_pdf.py` both call it (dev 1068, design-publish-preflight
+    section 2.2)."""
+    return " ".join(page.main_text)
+
+
+def search_out(page):
+    """Why `page` is out of search, or None (design-publish-preflight section 7, S1; dev 1068): "noindex" when a `robots` meta's
+    comma-separated words hold `noindex` or `none` (any case; `index,nofollow` holds neither), "refresh" for a `meta refresh`, else
+    None. ONE function: the build (`building.carried.left_out`, for `_Builder.build_sitemap`) and the gate (`checker`, `domain`,
+    `unfinished`) both ask it, and ask it only under `site.json` `sitemap: "indexable"`: a site without the key is read as before
+    (a substring, `_is_redirect`, none), so no 0.9.0 tree changes."""
+    if page.robots_words & {"noindex", "none"}:
+        return "noindex"
+    if any(m.get("http-equiv", "").lower() == "refresh" for m in page.metas):
+        return "refresh"
+    return None
 
 
 def parse_page(rel, text):

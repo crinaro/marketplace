@@ -22,14 +22,14 @@ import looks
 from lookfiles.stamp import StampError
 from lookgrammar import layering
 
-from adoption import lookwrite
+from adoption import lookwrite, resumeproof
 from adoption.base import Refused
 from adoption.spec import CONVERSION_CLASSES, OPT_IN_CLASSES
 from adoption.tree import Overlay, TreeFiles
 from adoption.tokens import OLD_PAGES, home_feed, portfolio_folders, rewrite_tokens, site_json_labels, token_files
 from adoption.redirects import redirect_pages, redirect_problems
 from adoption.convert import (
-    _converted_dict, _give_resume_sidecar, _snapshot, converted_site_files,
+    _converted_dict, _snapshot, converted_site_files,
     label_conversions, normalise_redirect_keys, piece_renames,
 )
 from adoption.parity import current_parity, decide_conversions, template_fingerprint
@@ -58,8 +58,7 @@ def accept_problems(tree, data, paper=None, folders=None, kind=None, only=None, 
                                         "cannot convert", "one it can", "settle what the message names, "
                                         "then run the check again")], None
     seen = TreeFiles(tree, files, notes["removed"])
-    snap = _snapshot(tree, seen)
-    _give_resume_sidecar(snap)
+    snap = resumeproof.stand_in(_snapshot(tree, seen))      # the build is asked only whether it accepts the tree: the proof itself is `publishchecks`'
     try:
         acc = running.accept(snap)
     except Exception as e:      # noqa: BLE001 -- accept does not raise; this is the belt to its braces
@@ -322,7 +321,8 @@ def check_only(chosen=()):
     return set(c for c, _l, _w in CONVERSION_CLASSES if c not in OPT_IN_CLASSES or c in chosen)
 
 
-def site_problems(tree, data, paper=None, kind=None, folders=None, chosen=(), settings=None, parity=None, notes=None):
+def site_problems(tree, data, paper=None, kind=None, folders=None, chosen=(), settings=None, parity=None, notes=None, dispositions=None,
+                  persons=None, hints=None, accept_folders=None):
     """Every problem in what adopt WOULD write, all at once: `siteconfig.problems()` over the
     converted site.json (BEFORE the mechanical label conversion, so a pair-form label is reported and
     marked `apply fixes this`), then `content.layout_problems()` over the tree. A list of
@@ -331,7 +331,10 @@ def site_problems(tree, data, paper=None, kind=None, folders=None, chosen=(), se
     chosen settings (`plan_settings`): the tree is judged as apply would write it (dev #942, K1: `workKeys: all`, measured
     by parity, puts `work`'s meta into every portfolio's page.md, and `check` still called those keys unlisted). `parity` (the
     plan's record) and `notes` (a list) go to `accept_warnings`: the "read elsewhere" notes land in `notes`, ending with what
-    parity knows. A stored parity another site-studio measured says nothing here (`current_parity`, design-adopt-parity-2 7.5)."""
+    parity knows. A stored parity another site-studio measured says nothing here (`current_parity`, design-adopt-parity-2 7.5). `dispositions`,
+    `persons` and `hints` are what the last `parity` measured and the person decided, which `apply` converts by (`wouldwrite.conversion`): a
+    `check` that is not given them judges a different tree from the one `apply` writes (dev 1068, design 1.1). `accept_folders` are the folder
+    decisions the BUILD is asked about (`apply`'s: the person's own less those the archive satisfied); `folders` stay what the layout is judged by."""
     parity = current_parity(parity)
     d, _resume = _converted_dict(tree, data, paper, kind)
     probs = list(model.problems(d))
@@ -382,8 +385,9 @@ def site_problems(tree, data, paper=None, kind=None, folders=None, chosen=(), se
     probs += redirect_problems([r for r in redirect_pages(tree, d.get("redirects"))[0] if not r.boiler])
     have = set((p.path, p.message) for p in probs)
     olds = ((parity or {}).get("hints") or {}).get(OLD_PAGES)      # dev #985: the old pages the last parity measured
-    refusals, acc = accept_problems(tree, data, paper, folders, kind, check_only(chosen), settings=settings,
-                                    hints={OLD_PAGES: olds} if olds else None)
+    refusals, acc = accept_problems(tree, data, paper, folders if accept_folders is None else accept_folders, kind, check_only(chosen),
+                                    settings=settings, dispositions=dispositions,
+                                    persons=persons, hints=hints or ({OLD_PAGES: olds} if olds else None))
     found = []
     probs += [p for p in waits_on_work_keys(refusals + accept_warnings(acc, (), parity, found), data, settings)
               if (p.path, p.message) not in have]

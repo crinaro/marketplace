@@ -7,18 +7,29 @@ an exit code, and returns an exit code only where the verb has its own (`check` 
 """
 
 import json
+import os
+import shutil
+import tempfile
 
+from configschema import model  # noqa: E402
 from contentmodel import keytables  # noqa: E402
 
-from adoption.accounting import cmd_file, no_landing_lines, no_landing_rows, said_before_apply, stale_line, undisposed_rows
+from adoption import applyrefusals, publishchecks, publishfixes, resumeproof, shots, wouldwrite
+from adoption.accounting import cmd_file, no_landing_lines, no_landing_rows, open_folders, said_before_apply, stale_line, undisposed_rows
+from adoption.blockers import is_stray_warning
+from adoption.classify import classify_text, file_kind, shadow_names
+from adoption.units import first_line
 from adoption.fileacct import measured_folders
 from adoption.keycover import note_lines
-from adoption.base import Refused
+from adoption.base import NeedsAnswer, PlanError, Refused, git, gitt
 from adoption.measure import cmd_parity, cmd_remeasure
-from adoption.parity import preconditions
+from adoption.parity import current_parity, example_site_json, preconditions
+from adoption.tokens import detect_resume
+from adoption.tree import Tree
 from adoption.plan import _current_base, _plan_for, _set, save_plan
 from adoption.problems import plan_settings, analyse_problems, format_problems, held_problems, look_lines, site_problems, size_copy_note
 from adoption.report import _conversion_block, cmd_inventory
+from adoption.review_cover import run_tool
 from adoption.reports import cmd_report
 from adoption.settings import cmd_setting
 from adoption import suggestions
@@ -26,16 +37,39 @@ from adoption.suggest import cmd_suggest
 from adoption.spec import load_spec
 
 
+def _measured(plan):
+    """(dispositions, persons, hints): what the last `parity` measured and the person decided, which `apply` converts by."""
+    meas = current_parity(plan.get("parity")) or {}
+    persons = dict((p, e["disposition"]) for p, e in plan["files"].items() if e.get("disposition"))
+    return ((meas.get("accounting") or {}).get("dispositions") or None), persons, (meas.get("hints") or None)
+
+
+def _publish_lines(repo, tree, data, plan, args, ask_online=False):
+    """(Result, lines): the publish checks over the one converted tree (`publishchecks.for_plan`), as `check` prints them. Before a `parity`
+    the list is for the plugin's default look and changes no exit code (design 1.1)."""
+    res, notes = publishchecks.for_plan(repo, tree, data, plan, ask_online=ask_online)
+    lines = ["note: %s" % n for n in notes]
+    lines += publishchecks.block_lines(res, before_parity=current_parity(plan.get("parity")) is None, show_all=getattr(args, "all", False))
+    return res, lines
+
+
 def verb_check(repo, args):
-    """`adopt.py check`: can the repo be converted, and what stands in the way."""
+    """`adopt.py check [--online] [--all]`: can the repo be converted, what stands in the way, what the publish would refuse, and what `apply` itself would
+    refuse (`applyrefusals`: exit 1, before a `parity` too)."""
     basis, tree, data = preconditions(repo)
     for line in basis.up_front():
         print(line)
     plan = _plan_for(repo, basis.sha, print)
     notes = []                                                # design-movement-view 6.1: a note, not a decision
+    dispositions, persons, hints = _measured(plan)
+    # the layout is judged with the folders `parity` measured as archived (F2); the build is asked about the tree as `apply` converts it, whose folder
+    # decisions are the person's own less those the archive satisfied (F1: `wouldwrite.conversion`)
+    opened = open_folders(plan["folders"], tree.paths(), dispositions) if dispositions else None
     probs = (site_problems(tree, data, None, plan.get("siteKind"), measured_folders(tree, plan), plan["convert"], plan_settings(plan),
-                           plan.get("parity"), notes)
+                           plan.get("parity"), notes, dispositions, persons, hints, opened)
              + held_problems(tree, data, plan))               # F2: a folder the last `parity` archived wholly is no question
+    if dispositions:                                          # a stray file is disposed by the file accounting, never also a refusal (R4 row 16 (a))
+        probs = [p for p in probs if not is_stray_warning(p)]
     look = ["note: %s" % l for l in look_lines(tree, data, ((plan.get("settings") or {}).get("look") or {}).get("value"))]   # P5, P6
     for line in format_problems(probs) + note_lines(notes) + look:
         print(line)
@@ -54,12 +88,30 @@ def verb_check(repo, args):
             print(size_copy_note(tree))
         _say(said_before_apply(plan))                  # 4.6: the files that will block apply, and the choices parity has not measured
         return 1
-    print("adopt ok: %s %s can be converted" % (basis.label(), basis.sha[:7]))
+    res, lines = _publish_lines(repo, tree, data, plan, args, ask_online=getattr(args, "online", False))
+    after = current_parity(plan.get("parity")) is not None
+    refused = after and res.blocks
+    decide, stops = applyrefusals.collect(repo, data, plan)                  # dev 1068, review R1 item 2: what `apply` itself would refuse, asked of the same functions
+    decide = [d for d in decide if d != res.pending]                         # a decision `check` already named as a note is not named twice
+    if refused or stops:
+        said = (["the publish would refuse it: %d finding(s)" % len(res.findings)] if refused else []) + (
+            ["apply would refuse it: %d refusal(s)" % len(stops)] if stops else [])
+        print("adopt check: %s %s can be converted, but %s" % (basis.label(), basis.sha[:7], ", and ".join(said)))
+    else:
+        print("adopt ok: %s %s can be converted" % (basis.label(), basis.sha[:7]))
     for line in _conversion_block(tree, data, plan):
         print(line)
     if size_copy_note(tree):
         print(size_copy_note(tree))
     _say(said_before_apply(plan))
+    _say(lines)
+    _say((["apply would refuse (each is a refusal `adopt.py apply` makes before it writes anything; `check` asks the same functions):"]
+          + ["  - %s" % r for r in stops]) if stops else [])
+    _say((["apply would stop until you decide:"] + ["  - %s" % d for d in decide]) if decide else [])
+    if getattr(args, "online", False):
+        _say(["note: %s" % n for n in publishchecks.environment_notes(repo)])
+        _say(["can still stop apply (each one is answered only by the step that makes it):"] + publishfixes.stop_lines())
+    return 1 if refused or stops else None
 
 
 def _say(lines):
@@ -72,31 +124,94 @@ def verb_inventory(repo, args):
     out = cmd_inventory(repo, args.json)
     plan = _plan_for(repo, _current_base(repo))
     acct = ((plan.get("parity")) or {}).get("accounting")     # N1: what the last `parity` measured
+    tree = Tree(repo, plan["base"])           # the basis `inventory` just wrote the plan for: no second fetch
+    res, lines = _publish_lines(repo, tree, example_site_json(tree), plan, args)
     if args.json:
         d = json.loads(out)
         d["noLanding"] = [{"path": p, "why": w} for p, w in no_landing_rows(acct)]
         d["undisposed"] = [{"path": p, "why": w} for p, w in undisposed_rows(acct)]
+        d["publish"] = publishchecks.to_json(res)           # every finding, never cut (dev 1068)
         out = json.dumps(d, indent=2, default=list)
     else:
-        out += "".join("\n" + l for l in (no_landing_lines(acct) if no_landing_rows(acct) else []) + said_before_apply(plan))
+        out += "".join("\n" + l for l in (no_landing_lines(acct) if no_landing_rows(acct) else []) + said_before_apply(plan) + lines)
     print(out)
 
 
+def _classified(repo, path, entry):
+    """The classification `apply` reads a file by (`wouldwrite.collect_removals`): the inventory's, and for an AMBIGUOUS file the one the person's `--as`
+    names. Read at the plan's basis; raises Refused for a path adopt reads no units of (dev 1068, S6)."""
+    tree = Tree(repo, _current_base(repo))
+    kind = file_kind(path)
+    if kind in (None, "mixed") or not tree.exists(path):
+        raise Refused("%s is not a file adopt classifies (an agent, a command, a skill or a script); run `adopt.py inventory` to see them" % path)
+    spec = load_spec()
+    info = classify_text(spec, path, kind, tree.text(path), shadows=shadow_names())
+    if info["class"] == "AMBIGUOUS" and entry.get("as"):
+        info = classify_text(spec, path, kind, tree.text(path), as_cap=entry["as"])
+    return info
+
+
 def verb_confirm(repo, args):
-    """`adopt.py confirm PATH [--keep] [--as CAPABILITY]`: the decision to remove (or keep) one file."""
+    """`adopt.py confirm PATH [--keep | --covered] [--as CAPABILITY]`: the decision to remove (or keep) one file; `--covered` is the person's word
+    that the plugin covers what a PARTIAL script adds, so it goes with the rest (its units are listed in the commit)."""
+    covered = getattr(args, "covered", False)
+    if covered:
+        if args.keep:
+            raise Refused("--covered and --keep are opposite answers for %s: give one" % args.path)
+        plan = _plan_for(repo, _current_base(repo), print)
+        if args.path not in plan["files"]:
+            raise Refused("%s is not in the plan; run `adopt.py inventory` first" % args.path)
+        info = _classified(repo, args.path, dict(plan["files"][args.path], **({"as": args.as_cap} if args.as_cap else {})))
+        if info["kind"] != "code":
+            raise Refused("%s has units to answer one by one: `adopt.py unit %s UNIT_ID covered`, or `adopt.py unit %s --rest covered` for the rest"
+                          % (args.path, args.path, args.path))
+        if info["class"] != "PARTIAL":
+            raise Refused("%s is %s, not PARTIAL: only a PARTIAL script has behaviour nothing says is safe to drop, so only it needs `--covered`%s"
+                          % (args.path, info["class"], "; `adopt.py confirm %s` removes a DUPLICATE" % args.path if info["class"] == "DUPLICATE" else ""))
+        if info["needs_parity"]:
+            raise Refused("%s is a local builder file: it is dropped only after parity says the site is the same (run `adopt.py parity`), never on your "
+                          "word that the plugin covers it; `adopt.py confirm %s` then removes it" % (args.path, args.path))
+
     def fn(plan, e, tree):
         e["removal"] = "keep" if args.keep else "confirm"
+        if covered:
+            e["covered"] = True
+        else:
+            e.pop("covered", None)                  # a later plain `confirm` or `--keep` takes the answer back
         if args.as_cap:
             if args.as_cap not in load_spec().caps:
                 raise Refused("unknown capability %s; pass one of %s to --as"
                               % (args.as_cap, ", ".join(sorted(load_spec().caps))))
             e["as"] = args.as_cap
     _set(repo, args.path, fn)
-    print("adopt: %s -> %s" % (args.path, "keep" if args.keep else "remove (after apply)"))
+    print("adopt: %s -> %s" % (args.path, "keep" if args.keep else "remove (after apply)%s" % (
+        "; the plugin covers its extra behaviour: every unit is listed in the commit as covered" if covered else "")))
+
+
+def _unit_rest(repo, args):
+    """`adopt.py unit PATH --rest covered`: every unit of the file with no answer yet is answered covered, each one's first line printed first."""
+    plan = _plan_for(repo, _current_base(repo), print)
+    e = plan["files"].get(args.path)
+    if e is None:
+        raise Refused("%s is not in the plan; run `adopt.py inventory` first" % args.path)
+    left = [u for u in _classified(repo, args.path, e)["residual_units"] if u["id"] not in (e.get("units") or {})]
+    if not left:
+        raise Refused("%s has no unit without an answer (answered: %s); nothing to do: change one answer with `adopt.py unit %s <id> <disposition>`"
+                      % (args.path, ", ".join(sorted(e.get("units") or {})) or "none", args.path))
+    for u in left:                                          # said BEFORE it is stored: the person reads what is being dropped
+        print("adopt: %s %s -> covered: %s" % (args.path, u["id"], first_line(u["text"])))
+    for u in left:
+        e.setdefault("units", {})[u["id"]] = {"disposition": "covered"}
+    save_plan(repo, plan)
+    print("adopt: %d unit(s) of %s covered by the plugin: dropped with the file, which is archived (apply lists each one in its commit)"
+          % (len(left), args.path))
 
 
 def verb_unit(repo, args):
-    """`adopt.py unit PATH UNIT_ID DISPOSITION`: what becomes of one residual unit of a file."""
+    """`adopt.py unit PATH UNIT_ID DISPOSITION`: what becomes of one residual unit of a file (`PATH --rest covered`: of every one not answered yet)."""
+    if getattr(args, "rest", False):
+        return _unit_rest(repo, args)
+
     def fn(plan, e, tree):
         if args.disposition == "person-data" and not args.kind:
             raise Refused("--kind context|voice|rule is required for person data")
@@ -198,8 +313,25 @@ def verb_kind(repo, args):
 
 
 def verb_parity(repo, args):
-    """`adopt.py parity [--accept [--shots DIR/shots]] [--keep DIR]`: build both ways and compare."""
-    cmd_parity(repo, args.accept, args.keep, args.shots, as_json=getattr(args, "json", False))
+    """`adopt.py parity [--accept [--shots DIR/shots]] [--keep DIR]`: build both ways and compare. After the verdict it prints what `apply` itself would
+    refuse, as `check` does (dev 1068, review round: one list in every stage; the JSON form carries `publish` only)."""
+    rc = cmd_parity(repo, args.accept, args.keep, args.shots, as_json=getattr(args, "json", False))
+    if not getattr(args, "json", False):
+        _say(_apply_refusal_lines(repo))
+    return rc
+
+
+def _apply_refusal_lines(repo):
+    """The `apply would refuse` block of `check`, for the plan as it stands now (after `parity` saved it); [] when apply would refuse nothing, and [] when the
+    plan or the basis cannot be read again here: parity has already said what it measured, and `check` asks the same refusals and says why it cannot."""
+    try:
+        basis, _tree, data = preconditions(repo)
+        plan = _plan_for(repo, basis.sha, lambda *_a, **_k: None)
+    except (Refused, PlanError):
+        return []
+    _decide, stops = applyrefusals.collect(repo, data, plan)
+    return (["apply would refuse (each is a refusal `adopt.py apply` makes before it writes anything; `check` asks the same functions):"]
+            + ["  - %s" % r for r in stops]) if stops else []
 
 
 def _one(ids, option):
@@ -233,6 +365,89 @@ def verb_file(repo, args):
     print(cmd_file(repo, args.path, args.disposition, args.clear))
 
 
+def _as_is(repo, plan, snap, proof):
+    """`adopt.py proof --as-is`: the person's "this PDF is right" for a PDF the plugin's reader finds too little in or cannot read (dev 1068, design 2.2, O-2):
+    its hash goes into the plan (`resumeProof`), void when the PDF changes. The privacy review must then open the PDF; the hidden-details findings stand."""
+    if proof.state == resumeproof.VOUCHED:
+        print("adopt: you already vouched for %s; it holds while the PDF is this file" % proof.pdf)
+        return
+    if proof.state not in resumeproof.MAY_BE_VOUCHED:
+        raise Refused("there is nothing to vouch for: %s; `--as-is` is for a PDF the plugin's reader finds too little in or cannot read, so run `adopt.py proof` to see where yours stands"
+                      % " ".join(resumeproof.state_lines(proof)).replace("resume proof: ", "", 1))
+    plan["resumeProof"] = resumeproof.vouch_row(snap.files, proof)
+    save_plan(repo, plan)
+    print("adopt: you vouch for the resume PDF %s (%s). `adopt.py apply` writes its proof and its commit says you vouched for it; the PDF does not change. "
+          "The privacy gate still lists the PDF as not read, so the privacy review must open it (`/site-studio:review`), and the `apply` that follows that "
+          "review must be run on the same UTC day, or the review has to be made again. This holds only while the PDF is this file: a new PDF voids it. "
+          "Findings about the PDF's hidden details (an author, an unknown program, a title that is no page's) still stand: `--as-is` does not answer them."
+          % (proof.pdf, proof.read_as()))
+
+
+def _print_pdf(repo, basis, tree, plan, snap, proof, finder=None, tool=None):
+    """`adopt.py proof --print`: print a new resume PDF from the CONVERTED resume page with Chrome, in a scratch repository, and copy only the PDF to the path
+    it has at the basis (design 2.3). The sidecar is `apply`'s, so it can never be stale against the converted source."""
+    head = gitt(repo, "rev-parse", "--verify", "-q", "HEAD^{commit}", check=False)
+    if basis.sha != head:
+        raise Refused("the new PDF would be committed on a branch adopt does not read (adopt converts %s %s; this checkout is at %s): %s"
+                      % (basis.label(), basis.sha[:7], head[:7], basis.reason or "bring this branch and origin/main together (merge or push), then run it again"))
+    if current_parity(plan.get("parity")) is None:
+        raise Refused("run `adopt.py parity` first: the PDF is printed in the look parity chooses, so one printed before it could be in a look the site does not have")
+    if not proof.pdf:
+        raise Refused("the converted site configures no resume PDF, so there is nothing to print: commit the PDF beside the resume source (content/resume/resume.pdf), then run `adopt.py inventory` and `adopt.py proof --print` again")
+    if detect_resume(tree)["needsAnswer"] and not plan["paper"]:               # the converted site.json carries a guess (Letter) that `apply` refuses to publish
+        raise NeedsAnswer("resume.paper needs your answer: the resume PDF's paper size cannot be read from it; run `adopt.py paper Letter` or `adopt.py paper A4`, then print again")
+    found, where = (finder or shots.find_chrome)()
+    if not found:
+        raise Refused("Chrome is needed to print the PDF and was not found (%s); install it, or use `adopt.py proof --as-is` for the PDF you have" % where)
+    resume = model.parse_text(snap.files["site/site.json"].decode("utf-8")).resume or {}
+    where_at = next((old for old, new in snap.notes.get("resumePdfName") or [] if new == proof.pdf), proof.pdf)      # a pending rename is followed back
+    work = tempfile.mkdtemp(prefix="adopt-proof-")
+    try:
+        for rel, blob in snap.files.items():
+            os.makedirs(os.path.dirname(os.path.join(work, *rel.split("/"))), exist_ok=True)
+            with open(os.path.join(work, *rel.split("/")), "wb") as fh:
+                fh.write(blob)
+        ident = {"GIT_AUTHOR_NAME": "adopt proof", "GIT_AUTHOR_EMAIL": "proof@example.invalid", "GIT_COMMITTER_NAME": "adopt proof",
+                 "GIT_COMMITTER_EMAIL": "proof@example.invalid"}
+        git(work, "init", "-q", "-b", "main", env=ident)
+        git(work, "add", "-A", "-f", ".", env=ident)
+        git(work, "commit", "-q", "-m", "converted tree", "--allow-empty", env=ident)
+        rc, text = (tool or run_tool)("resume_pdf.py", ["--repo", work, "--quiet"], work)
+        if rc != 0:
+            raise Refused("the PDF was not printed: %s; fix what it says and run `adopt.py proof --print` again"
+                          % (([l for l in text.strip().split("\n") if l.strip()] or ["resume_pdf.py printed nothing"])[-1]))
+        with open(os.path.join(work, *proof.pdf.split("/")), "rb") as fh:
+            blob = fh.read()
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+    dest = os.path.join(repo, *where_at.split("/"))
+    os.makedirs(os.path.dirname(dest), exist_ok=True)
+    with open(dest + ".part", "wb") as fh:
+        fh.write(blob)
+    os.replace(dest + ".part", dest)
+    print("adopt: printed %s (%d bytes, %s) from the converted resume page; nothing else was written (the proof is made by `apply`)" % (where_at, len(blob), resume["paper"]))
+    print("visitors get this PDF the next time either builder publishes; look at it, commit it, then `adopt.py inventory` and `adopt.py parity`")
+    print("if your template stamps the PDF's bytes beside it (a `.sha256` file), your old builder may stop after this: the next `parity` says so, as it does for any builder failure")
+
+
+def verb_proof(repo, args):
+    """`adopt.py proof [--as-is | --print]`: the resume PDF's proof (design 2). Alone it prints where the proof stands and what answers it; `--as-is` is the
+    person's "this PDF is right", `--print` prints a new PDF. Starts as every verb that reads the basis does (`preconditions`)."""
+    if args.as_is and args.print_:
+        raise Refused("--as-is and --print answer the same question in two ways; give one")
+    basis, tree, data = preconditions(repo)
+    for line in basis.up_front():
+        print(line)
+    plan = _plan_for(repo, basis.sha, print)
+    snap = wouldwrite.snapshot(wouldwrite.conversion(tree, data, plan, mode="check"))
+    proof = resumeproof.prove(snap.files, resumeproof.vouched_sha(plan))
+    if args.as_is:
+        return _as_is(repo, plan, snap, proof)
+    if args.print_:
+        return _print_pdf(repo, basis, tree, plan, snap, proof)
+    _say(resumeproof.state_lines(proof))
+
+
 def verb_setting(repo, args):
     """`adopt.py setting NAME VALUE | --clear`: a chosen setting."""
     if args.clear == (args.value is not None):
@@ -260,6 +475,7 @@ VERBS = {
     "report": verb_report,
     "file": verb_file,
     "setting": verb_setting,
+    "proof": verb_proof,
     "remeasure": verb_remeasure,
     "suggest": verb_suggest,
 }

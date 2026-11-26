@@ -6,8 +6,9 @@ site-wide part where it does not. The recording is made under a look that writes
 site-wide part; derive reads it as the place's own part only where the site-wide reading leaves the construct unmapped or
 ambiguous, and keeps that reading only when it maps more (`derive.derive_look`). Three families, each one table:
 
-    picture_places() (place construct, item part) whose picture renders through `<place>.image` (0.5.0's `PLACE_PICTURES`,
-                     read from `lookgrammar.constructs.PLACE_PARTS`: the entries whose site-wide part is an `image` part);
+    picture_places() (place construct, item part) whose picture renders through `<place>.image` (0.5.0's `PLACE_PICTURES`):
+                     `DERIVED_PLACES`, an explicit literal since 0.10.0 (design-publish-preflight section 5.2, dev 1068), not read
+                     from `lookgrammar.constructs.PLACE_PARTS`, which gained `card.image` for a look to WRITE, never for derive to try;
                      picture_parts() the `(place, "image")` parts themselves
     card_places()    {place construct: its item part} whose reference card renders through `<place>.item` (0.6.0: `feed.item`,
                      `home-samples.item`, the entries of PLACE_PARTS whose site-wide part is `reference-card.wrap`)
@@ -26,12 +27,17 @@ import json
 import looks
 from lookgrammar.constructs import PART_FIRST, PLACE_PARTS
 
+# The places derive may read as having a picture part of their own: the two a derived look has tried since 0.5.0. Every entry of
+# `PLACE_PARTS` whose site-wide part is an `image` part used to be one; 0.10.0 adds `card.image` there, and a literal keeps derive from
+# trying it (a derived look and the held-out pins must not move for a part the issue asks a person to be able to write).
+DERIVED_PLACES = (("home-showcase", "item"), ("steps-view", "item"))
+
 NAV_STATES = {"brand": "brand", "brand-current": "brand-current", "section": "-section"}
 
 
 @functools.lru_cache(maxsize=None)
 def picture_places():
-    return tuple(sorted((c, "item") for (c, p), (sc, _sp) in PLACE_PARTS.items() if sc == "image" and p == "image"))
+    return DERIVED_PLACES
 
 
 @functools.lru_cache(maxsize=None)

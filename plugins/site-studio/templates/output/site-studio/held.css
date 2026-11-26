@@ -1,0 +1,1 @@
+@layer site-studio-held { :where(img[data-ss-held]) { width: auto; height: auto } }

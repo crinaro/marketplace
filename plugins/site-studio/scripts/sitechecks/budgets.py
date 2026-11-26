@@ -4,8 +4,12 @@
   performance  the budgets of site.json (siteconfig.BUDGET_DEFAULTS): an image over sizeCopyOverKB
                that images.plan_copies says needs size copies but has none; per page, the images
                it loads against firstViewMaxMB (non-lazy images and the first image) and
-               pageImagesMaxMB (all). An image costs its largest candidate up to 1440 px wide
-               (what a 2x screen would fetch from the srcset). OURS: an approximation, stated.
+               pageImagesMaxMB (the images that are not lazy). An image costs the LOWER of its largest candidate up to
+               1440 px wide (0.9.0's) and the candidate its `sizes` slot asks for (`imageweight.py`). OURS: an
+               approximation, stated. Since 0.10.0 (schema 10 reading, but unconditional: only lower weights, never a
+               heavier page; design-publish-preflight section 5.1, dev 1068) the lazy images of a page are counted apart,
+               against `budgets.lazyImagesMaxMB` (default 20, never less than the effective pageImagesMaxMB), and a page
+               over half of it prints a note.
   size         the published tree against treeMaxMB, and any single file near GitHub's limit.
 
   Dated note, 2026-11-20 (design-adopt-parity-2 section 4.7.2, owner decision 2 (i)): a CARRIED page (`site.json`
@@ -16,9 +20,11 @@
   prints the `carried:` note, so the skip is never a quiet pass. A tree without the key is judged as before.
 """
 
+from configschema.configkeys import LAZY_IMAGES_MAX_MB_DEFAULT
 from imaging import plan, sniff
 import os
 import re
+from sitechecks import imageweight
 from sitechecks.kinds import IMAGE_EXTS
 from sitechecks.page import parse_srcset
 from sitechecks.tree import _size_copy_of, classify
@@ -28,8 +34,9 @@ class BudgetChecks(object):
     """The `performance` and `size` families (a mixin of `Checker`)."""
 
     # -- performance and size ----------------------------------------------------------------
-    def _img_cost(self, rel, im):
-        """Bytes this <img> would cost on a 2x screen: its largest candidate up to 1440 wide."""
+    def _img_cands(self, rel, im):
+        """[(width, file)] of the files this <img> may load that are in the tree: its srcset candidates (width 0 without a `w`
+        descriptor), then its src (the file's own width). `imageweight` costs them (0.9.0 costed the widest up to 1440 wide)."""
         cands = []
         for u, d in parse_srcset(im["srcset"]):
             m = re.match(r"^(\d+)w$", d)
@@ -47,11 +54,7 @@ class BudgetChecks(object):
                 if tgt and not pr and tgt in self.t.files:
                     d = sniff.read_dimensions(self.t.read(tgt))
                     cands.append((d[0] if d else 0, tgt))
-        if not cands:
-            return None, 0
-        under = [c for c in cands if c[0] <= 1440] or [min(cands)]
-        w, tgt = max(under)
-        return tgt, self.t.files[tgt]
+        return cands
 
     def performance(self):
         fam = "performance"
@@ -79,28 +82,36 @@ class BudgetChecks(object):
                                      "(<stem>-<width>w.<ext>); import it again" % (self.t.files[rel] // 1024, over_kb))
         first_cap = b["firstViewMaxMB"] * 1024 * 1024
         page_cap = b["pageImagesMaxMB"] * 1024 * 1024
+        lazy_mb = self.lazy_limit_mb(b)
+        lazy_cap = lazy_mb * 1024 * 1024
         for rel, p in sorted(self.pages.items()):
             if rel in self.carried:             # the page as the person wrote it (the dated note)
                 continue
             n += 1
-            seen, total, first, first_seen = set(), 0, 0, set()
-            for i, im in enumerate(p.imgs):
-                tgt, cost = self._img_cost(rel, im)
-                if tgt is None:
-                    continue
-                if tgt not in seen:
-                    seen.add(tgt)
-                    total += cost
-                if (i == 0 or (im["loading"] or "").lower() != "lazy") and tgt not in first_seen:
-                    first_seen.add(tgt)
-                    first += cost
-            if first > first_cap:
+            images = [{"cands": self._img_cands(rel, im), "sizes": im["sizes"], "first": i == 0,
+                       "lazy": (im["loading"] or "").lower() == "lazy"} for i, im in enumerate(p.imgs)]
+            w = imageweight.weigh_page(images, self.t.files)
+            if w["first"] > first_cap:
                 self.r.add(fam, rel, "first-view images weigh %.2f MB at 2x, over the %s MB budget"
-                           % (first / 1048576.0, b["firstViewMaxMB"]))
-            if total > page_cap:
+                           % (w["first"] / 1048576.0, b["firstViewMaxMB"]))
+            if w["eager"] > page_cap:
                 self.r.add(fam, rel, "images on the page weigh %.2f MB at 2x, over the %s MB budget"
-                           % (total / 1048576.0, b["pageImagesMaxMB"]))
+                           % (w["eager"] / 1048576.0, b["pageImagesMaxMB"]))
+            if w["lazy"] > lazy_cap:
+                self.r.add(fam, rel, "lazy images on the page weigh %.2f MB at 2x, over the %s MB budget"
+                           % (w["lazy"] / 1048576.0, lazy_mb))
+            elif w["lazy"] > lazy_cap / 2:
+                self.r.notes.append("performance: %s: lazy images weigh %.2f MB at 2x, over half of the %s MB lazy limit"
+                                    % (rel, w["lazy"] / 1048576.0, lazy_mb))
         self.r.count(fam, n)
+
+    @staticmethod
+    def lazy_limit_mb(b):
+        """The limit of a page's lazy images in MB (schema 10, O-6 a): `budgets.lazyImagesMaxMB`, default 20
+        (`configkeys.LAZY_IMAGES_MAX_MB_DEFAULT`), and never less than the site's effective `pageImagesMaxMB`, so a site that raised
+        that limit is not newly refused. `b` is `effective_budgets()`, which holds the key only when the site sets it (it is not a
+        member of BUDGET_DEFAULTS)."""
+        return max(b.get("lazyImagesMaxMB", LAZY_IMAGES_MAX_MB_DEFAULT), b["pageImagesMaxMB"])
 
     def size(self):
         fam = "size"

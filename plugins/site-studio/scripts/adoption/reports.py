@@ -15,6 +15,15 @@ reads them:
                     deny mode prints the reports and leaves the rows pending.
   report --decline  records `declined` for every pending cause; a declined cause is offered again only on a newer version.
 
+A ROW CHANGES STATE ONLY WHEN THE PERSON WAS SHOWN IT AND ANSWERED (filed, declined), OR WHEN A RUN THAT COULD SEE ITS CAUSE MEASURED IT GONE (`apply`, `remeasure`: today's
+`resolved`). `report` measures nothing and is shown only the pending rows, so every other recorded row (a `filed` one with its issue number, a `declined` one, an `upgrade`
+one) passes through it unchanged (dev 1068, 0.10.0 review R3; 0.9.0 resolved them on any `--file`).
+
+A RECORDED CAUSE THAT IS NO LONGER THE PLUGIN'S IS NOT OFFERED (dev 1068, design 1.3). 0.9.0 recorded every `publish/gate/<family>` finding as a plugin cause; 0.10.0 says
+who can fix each one (`publishfixes`). A pending row of a family whose findings the table gives only to adopt, the site or the person (`media`, `links`, `head` ...: no row
+of the family is the plugin's) keeps its state in the record and is neither offered, filed nor declined here: `adopt.py check` lists what it was. A family that also has
+plugin rows (`domain`, `structure`) stays offered, because only a run over the tree can say which kind it holds.
+
 `--repo` is a TOP-LEVEL option, written before the verb (`adopt.py --repo X report --file`): the guard resolves the target
 repository from it, from the working directory or from a `cd`, and the `report` subparser is built with `allow_abbrev=False`
 so `--fil` can never mean something else (design Q1.10; the top-level parser's setting does not reach a subparser).
@@ -29,6 +38,7 @@ import sys
 
 import report_issue  # noqa: E402
 
+from adoption import publishfixes
 from adoption.base import Refused, git, gitt
 
 REPORTS_REL = ".site-studio/adopt-reports.json"
@@ -43,6 +53,15 @@ def rows_at(repo, ref="HEAD"):
         return report_issue.parse_reports(shown.stdout.decode("utf-8", "replace"))
     except report_issue.ReportsError as e:
         raise Refused("%s: %s; edit the file, or restore the committed copy from an earlier commit" % (REPORTS_REL, e))
+
+
+def not_the_plugins(cause_id):
+    """True for the id of a `publish/gate/<family>` cause whose family has no finding form the plugin must fix (`publishfixes.ROWS`): such a recorded row is no
+    longer the plugin's to be offered (design 1.3)."""
+    parts = cause_id.split("/")
+    if len(parts) != 4 or parts[1:3] != ["publish", "gate"] or parts[3] not in publishfixes.GATE_FAMILIES:
+        return False
+    return not any(r.who == publishfixes.PLUGIN for r in publishfixes.ROWS if r.family == parts[3])
 
 
 def site_terms(repo):
@@ -101,16 +120,20 @@ def cmd_report(repo, file=False, decline=False, runner=None, out=None, err=None,
     if not rows:
         out.write("report: there are no blockers recorded (no %s): nothing to report\n" % REPORTS_REL)
         return 0
+    kept = [r for r in rows if r["state"] in ("pending", "regressed") and not_the_plugins(r["id"])]
+    if kept:
+        out.write("report: %d recorded cause(s) are not offered: their findings are adopt's, the site's or yours to fix and not the plugin's, and each keeps "
+                  "its state (`adopt.py check` lists them)\n" % len(kept))
     if decline:
-        new = report_issue.decline(rows)
+        new = report_issue.decline(rows, ids=set(r["id"] for r in rows if r not in kept))
         n = sum(1 for a, b in zip(rows, new) if a["state"] != b["state"])
         if n:
             write_rows(repo, new)
             commit_record(repo, "adopt report: %d cause(s) declined" % n)
         out.write("report: %d pending cause(s) declined; each is offered again only by a newer site-studio\n" % n)
         return 0
-    pending = [r for r in rows if r["state"] in ("pending", "regressed")]
-    if not pending and not file:
+    pending = [r for r in rows if r["state"] in ("pending", "regressed") and r not in kept]
+    if not pending:                                     # with --file too: it files nothing, and says so, rather than printing nothing
         out.write("report: no pending blockers (%d recorded: %s)\n" % (
             len(rows), ", ".join(sorted(set(r["state"] for r in rows)))))
         return 0
@@ -119,9 +142,10 @@ def cmd_report(repo, file=False, decline=False, runner=None, out=None, err=None,
     if file and pending:
         filing_preflight(repo, runner)
     prov = report_issue.provenance(engine=engine, node=shutil.which("node") is not None)
-    res = report_issue.report(causes, prov, terms=site_terms(repo), file=file, previous=rows, runner=runner, out=out,
-                              err=err, engine=engine)
-    if file and res["code"] != 2 and res["rows"] != rows:
-        write_rows(repo, res["rows"])
+    res = report_issue.report(causes, prov, terms=site_terms(repo), file=file, previous=[r for r in rows if r not in kept], runner=runner, out=out,
+                              err=err, engine=engine)           # a row that is not offered is not given to `report`: it would call a cause it did not see resolved
+    now = sorted(res["rows"] + kept, key=lambda r: r["id"])
+    if file and res["code"] != 2 and now != sorted(rows, key=lambda r: r["id"]):
+        write_rows(repo, now)
         commit_record(repo, "adopt report: the reports record after filing")
     return res["code"]

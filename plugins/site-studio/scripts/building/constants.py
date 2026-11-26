@@ -9,7 +9,8 @@ SCRIPTS_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 PLUGIN_ASSETS = {"css": "site-studio/blocks.css", "js": "site-studio/video.js",
                  "schema-4": "site-studio/schema-4.css",
                  "schema-5": "site-studio/schema-5.css",     # design-movement-view 4.2: the five 0.5.0 constructs only
-                 "schema-6": "site-studio/schema-6.css"}     # design-adopt-parity-2 4.8: the two 0.6.0 constructs only
+                 "schema-6": "site-studio/schema-6.css",     # design-adopt-parity-2 4.8: the two 0.6.0 constructs only
+                 "held": "site-studio/held.css"}             # design-publish-preflight 3.2: linked only by a page that prints `<img data-ss-held>`
 
 JUNK_NAMES = (".DS_Store", "Thumbs.db")
 

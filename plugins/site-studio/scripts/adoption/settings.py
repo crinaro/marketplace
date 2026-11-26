@@ -87,7 +87,7 @@ from configschema.configkeys import (BUILTIN_PIECE_KEYS, COUNT_ANY, MEDIA_PATH_F
 from configschema.diagnostics import SiteConfigError
 from contentmodel.keytables import KEY_RE, piece_keys_read
 
-from adoption import carry, lookwrite, menulabels
+from adoption import carry, lookwrite, menulabels, settings10
 from adoption.base import Refused
 from adoption.accounting import stale_line
 from adoption.plan import _current_base, _plan_for, save_plan
@@ -124,7 +124,7 @@ HOME_KEYS = ("titleForm", "introScope", "partOrder")       # the settings writte
 PORTFOLIO_KEYS = ("cardNumber", "cardNumberFormat", "cardLabels", "backLink")     # the portfolio keys written into every page.md
 SHARED_WORK_KEYS = ("meta", "cardMeta")                                          # the `work` keys `workKeys: all` copies
 BACK_LINK_MAX = 60
-_PER_PORTFOLIO = ("sort", "view", "menuLinks", "onePieceIndex") + V5_PORTFOLIO_SETTINGS + V6_PORTFOLIO_SETTINGS + ("backLink",)
+_PER_PORTFOLIO = ("sort", "view", "menuLinks", "onePieceIndex") + V5_PORTFOLIO_SETTINGS + V6_PORTFOLIO_SETTINGS + ("backLink",) + settings10.PORTFOLIO_FAMILIES
 _CARD_PAGES = ("cardImage", "cardAlt", "cardKicker")       # a card or a tile: the portfolio's index and the home page
 _FM = re.compile(r"^([A-Za-z][A-Za-z0-9_]*):")
 PERSON_ROWS = ("look.", "reads.")       # plan schema 4's measured rows of the person's look entries: evidence, never a setting to write
@@ -159,6 +159,8 @@ def setting_paths(name):
         return ["%s/index.html" % port, "index.html"]
     if fam in ("pieceLink", "pieceTeaser", "pieceRoles", "backLink") and port:
         return ["%s/" % port]                      # the portfolio's pages: its piece pages are the ones that change
+    if fam in settings10.PORTFOLIO_FAMILIES and port:
+        return ["%s/" % port, "index.html"]        # `blankMeta`: its piece pages and index, and the cards the home page prints (0.10.0)
     if fam in ("cardLabels", "cardNumber", "cardNumberFormat", "backLink", "workKeys", "blocks.headingLevel",
                "blocks.loneReferenceGrid"):
         return ["*"]                          # cards on the home and the indexes; the back link on every piece page; a block on any page
@@ -336,10 +338,10 @@ def apply_settings(view, files, d, settings, hints, notes, portfolios):
     """Lay the settings over the converted tree: `d` (site.json's dict) and `files` ({path: bytes}) are changed in place;
     `notes["settings"]` gains one line per setting applied."""
     order = SETTING_ORDER + V6_SETTING_ORDER
-    lookwrite.carry(view, files, d, settings.get("look"), notes)     # both look files, as adopt's own (step 8)
+    lookwrite.carry(view, files, d, settings10.look_for(settings), notes)     # both look files, as adopt's own (step 8); `images.sizes: held` completes the derived look's pictures first (0.10.0)
     for name in sorted(settings, key=lambda n: (order.index(setting_family(n)) if setting_family(n) in order else 99, n)):
         value, fam = settings[name], setting_family(name)
-        if name.startswith(PERSON_ROWS):
+        if name.startswith(PERSON_ROWS) or settings10.apply_site(d, settings, name, value, notes):
             continue
         if name == "carried":                  # section 7.4's `carried` row: the bytes from `hints`, checked against their sha256
             if value and carry.HINT in (hints or {}):
@@ -441,7 +443,7 @@ def apply_settings(view, files, d, settings, hints, notes, portfolios):
                                           "cardLabels": "cardLabels: false", "backLink": "backLink: %s" % json.dumps(value)}[fam])
         elif fam in _PER_PORTFOLIO and "." in name:
             if ((fam == "menuLinks" and value == "index") or (fam == "onePieceIndex" and value == "redirect")
-                    or (fam in V5_PORTFOLIO_SETTINGS and value in (None, False, ""))):
+                    or ((fam in V5_PORTFOLIO_SETTINGS or fam in settings10.PORTFOLIO_FAMILIES) and value in (None, False, ""))):
                 continue                     # the default writes no key
             port = name.split(".", 1)[1]
             path = "content/%s/page.md" % port
@@ -619,12 +621,14 @@ _BOOLEAN = ("nav.home", "cardLabels", "cardNumber", "blocks.loneReferenceGrid")
 def parse_chosen(name, text):
     """The value for `adopt.py setting NAME TEXT`, or Refused naming what the setting takes. `look` takes only the default
     (a derived look is measured, never chosen: it is a file adopt writes); `backLink` takes one line of text."""
+    if settings10.is_v10(name):                     # 0.10.0: `images.sizes`, `sitemap`, `blankMeta.<portfolio>`
+        return settings10.parse_chosen(name, text)
     fam = setting_family(name)
     portfolio_form = "." in name and name.split(".", 1)[0] in _PER_PORTFOLIO
     if (fam not in SETTING_ORDER + V6_SETTING_ORDER or ((fam in _PER_PORTFOLIO) != portfolio_form and fam != "backLink")
             or (fam == "mediaPaths" and name.split(".", 1)[-1] not in MEDIA_PATH_FOLDERS)):
         raise Refused("%s is not a setting adopt measures; the settings are %s (sort and view take a portfolio: `sort.work`; "
-                      "mediaPaths a folder: `mediaPaths.home`); pass one of those names" % (name, ", ".join(SETTING_ORDER + V6_SETTING_ORDER)))
+                      "mediaPaths a folder: `mediaPaths.home`); pass one of those names" % (name, ", ".join(SETTING_ORDER + V6_SETTING_ORDER + settings10.NAMES)))
     if text == NAV_HOME_TITLE and (name == "nav.home" or fam == "cardAlt"):
         return NAV_HOME_TITLE                                # schema 6: the site title (nav.home), the piece's title (cardAlt)
     if fam in ("groupCount", "pieceRoles"):
@@ -725,4 +729,4 @@ def cmd_setting(repo, name, text, clear=False):
     plan["settings"][name] = {"value": value, "how": "chosen", "reason": "chosen with `adopt.py setting`"}
     save_plan(repo, plan)
     return "\n".join(["adopt: %s = %s (chosen: `adopt.py parity` keeps it and does not measure it)" % (name, json.dumps(value))]
-                     + [l for l in (stale_line(plan),) if l])
+                     + settings10.chosen_lines(name, value) + [l for l in (stale_line(plan),) if l])

@@ -11,7 +11,6 @@ copies) names `file:line` under "your own script may depend on the old form". An
 mechanical (an unknown key, a non-https previewUrl) is never rewritten: it stays `you decide`.
 """
 
-import hashlib
 import json
 import posixpath
 import re
@@ -730,18 +729,3 @@ def _snapshot(tree, seen):
     paths = list(seen)
     tree.prefetch([p for p in paths if p not in seen.overlay])
     return dict((p, seen[p]) for p in paths)
-
-
-def _give_resume_sidecar(files):
-    """The resume PDF sidecar the examples never wrote: parity gives the plugin side one, and so does the
-    check, so a missing sidecar is not reported as a refusal the person cannot yet act on (the first publish
-    after adopt asks for the PDF to be made again, by the resume skill)."""
-    try:
-        cfg = model.parse_text(files["site/site.json"].decode("utf-8"))
-    except (KeyError, UnicodeDecodeError, diagnostics.SiteConfigError):
-        return
-    pdf = cfg.resume.get("pdf") if cfg.resume else None
-    if pdf and pdf in files and (pdf + ".json") not in files and cfg.resume["path"] in files:
-        sha = lambda b: hashlib.sha256(b).hexdigest()  # noqa: E731
-        files[pdf + ".json"] = json.dumps({"source_sha256": sha(files[cfg.resume["path"]]),
-                                           "pdf_sha256": sha(files[pdf]), "text_sha256": "0" * 64}).encode("utf-8")
