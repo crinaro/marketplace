@@ -18,8 +18,8 @@ requests `/messaging/`, invitations and connections `/mynetwork/`, `/notificatio
 THE FACTS OF A READ (the only keys; an answer with another set of keys, or a value of another type, is `WARNING unclear reason=shape`):
 
   every kind   proto, host, path (`location`: a redirect to a sign-in or checkpoint address is seen) · ready (`readyState` complete) · password (password inputs) · challenge (challenge frames and
-               forms) · modal (open dialogs and modals that hold text) · notice (elements that SPEAK: `role` alert or status, `aria-live` other than off, a toast, authwall or captcha class, with
-               text) · banner (blocks of prose, 5 words or more, outside every recognized region) · lang (the document's `lang`) · kinds (the warning kinds whose phrase is on the page)
+               forms that are RENDERED) · modal (open dialogs and modals that are RENDERED and hold text) · notice (RENDERED elements that SPEAK: `role` alert or status, `aria-live` other
+               than off, a toast, global-alert, authwall or captcha class TOKEN, with text) · banner (blocks of prose, 5 words or more, outside every recognized region) · lang (the document's `lang`) · kinds (the warning kinds whose phrase is on the page)
   results      cards, text, dismiss: the job cards (counted by id: two elements of one card are one card, `ready_content`'s rule), how many have text, how many have their own dismiss control
   posting      about: the characters of the "About the job" block (its heading's parent, or a pure wrapper above it; `ready_content`'s rule), 0 when there is none
   reply        region: the characters of the page's `main` landmark
@@ -34,14 +34,22 @@ THE RECOGNIZED REGIONS (what the `banner` rule does not read): a job card; an "A
 `main` and `[role=main]`; `nav`, `header`, `footer`, `aside` and their roles. Prose elsewhere is a block with no block-level descendant and 5 words or more, whose text the page really shows
 (hidden and script text is not read).
 
+RENDERED MEANS SHOWN (jobsearch 0.95.1; public 305 and 306, dev 1085 and 1087). `challenge`, `modal` and `notice` count an element only when `checkVisibility({checkOpacity, checkVisibilityCSS})`
+says it is shown; a browser without that method counts every element, as before, so detection is never weakened. `innerText` of an element that is not rendered is its `textContent`, so
+before this a hidden element with text counted: an ordinary feed with video posts read `modal` 4 and `notice` 40 (each Video.js player carries hidden dialogs and aria-live control text),
+and a quiet inbox read `challenge` 1 (LinkedIn's invisible background reCAPTCHA frame). A `NOTICE` class match counts only as a whole class TOKEN or a BEM part of one (`TOKEN`): the
+inbox's `<body>` (a feature-flag class containing "global-alert"), its header's layout class `global-alert-offset-top` and the empty toast container (`artdeco-toasts`, "0 notifications
+total") read `notice` 6 before. A real pop-up, toast, alert banner, sign-in wall or a challenge frame that is drawn still counts.
+
 WHAT A PHRASE NOW MEANS (review item 6, D8). The phrase list is matched in ALL the page's text, the cards and the "About the job" block included: before, a card's text and that block were
 removed first, so a warning rendered inside either was never read. **The accepted cost: a job whose own text uses a phrase now reads as a warning**: a posting for a fraud analyst that says
 "unusual activity", a card titled "Unusual Activity Analyst", a role that names "third-party software". Doubtful = warning, said so.
 
 WHAT IT COSTS, PLAINLY (UNMEASURED: no real LinkedIn page was read; every figure below is a consequence of a rule, not a count). One warning of any kind, on any of the three kinds of page, turns
 the scheduled search off until the owner turns it on (WN3), so a false one costs the next scheduled search. Each rule turns off every ordinary page that shows what it looks for:
-  * `notice`: any element that speaks, with text. An ordinary page with an `aria-live` region that carries text (a result count announced to a screen reader, a badge) reads as a warning.
-  * `modal`: a cookie or survey dialog that is open.
+  * `notice`: any shown element that speaks, with text. An ordinary page with a shown `aria-live` region that carries text (a result count announced to a screen reader, a badge) reads as
+    a warning.
+  * `modal`: a cookie or survey dialog that is open and shown.
   * `language`: an account whose LinkedIn language is not English reads a warning on every page; so does any page whose `lang` is not `en`.
   * `banner`: a block of 5 or more words that sits in none of the recognized regions (a layout that puts the results outside `main`, a promotion or a footer note outside `aside` and `footer`).
   * `no-cards`: a search with no results has no card, so it is a warning until the wording of an empty page is seen and pinned. `cards-without-text` and `no-dismiss` are a layout change or a
@@ -58,7 +66,7 @@ on a real warning page.
 nothing can be said about LinkedIn and no warning is recorded. An answer of any OTHER shape, including text that is not JSON, is `WARNING unclear reason=shape`: junk is never `NO-PAGE`.
 
 READ-ONLY. The scripts click, scroll, type, request and navigate nothing, and reach only `location.protocol|hostname|pathname`, `document.readyState`, `document.querySelectorAll`,
-`document.body`, `getAttribute`, `closest`, `parentElement`, `children`, `textContent`, `innerText`, `setTimeout` and `Promise` (`ALLOWED_CALLS`; `tests/browser_fallback/test_page_warning.py` runs
+`document.body`, `getAttribute`, `closest`, `parentElement`, `children`, `textContent`, `innerText`, `checkVisibility`, `matches`, `classList`, `setTimeout` and `Promise` (`ALLOWED_CALLS`; `tests/browser_fallback/test_page_warning.py` runs
 every SHIPPED constant under node against a Proxy that throws on anything else).
 
 Pure. Python 3.9+, standard library only."""
@@ -99,6 +107,11 @@ CHALLENGE = ('iframe[src*="captcha"], iframe[src*="challenge"], iframe[src*="ark
 MODAL = '[role="dialog"], [role="alertdialog"], [aria-modal="true"], dialog[open]'
 PASSWORD = 'input[type="password"]'
 NOTICE = '[role="alert"], [role="status"], [class*="toast"], [class*="authwall"], [class*="captcha"], [class*="global-alert"]'
+# A NOTICE match is a notice only when it is one itself (public 306, dev 1087): role alert or status, or a class TOKEN that is `toast` or `global-alert` whole or as a BEM part
+# (`artdeco-toast-item`, `global-alert--error`, `x__toast`) or that holds `authwall` or `captcha`. Never <body> or <html>, a layout class (`global-alert-offset-top`), a feature-flag
+# class (`...-global-alert-lix-enabled-class`) or the empty toast container (`artdeco-toasts`).
+ROLEISH = '[role="alert"], [role="status"]'
+TOKEN = "authwall|captcha|(^|[-_])(toast|global-alert)($|--|__|-item)"
 LIVE = '[aria-live]'                # counted unless its value is `off`
 MAIN = 'main, [role="main"]'
 LAYOUT = MAIN + ', nav, header, footer, aside, [role="navigation"], [role="banner"], [role="contentinfo"], [role="complementary"]'
@@ -115,7 +128,8 @@ REASONS = ("shape", "changing", "not-linkedin", "loading", "wrong-path", "langua
 
 # The only identifiers the scripts may reference: documentation the test's own failure points back to. The test derives what each constant really contains and holds it to this list.
 ALLOWED_CALLS = ("location.protocol", "location.hostname", "location.pathname", "document.readyState", "document.querySelectorAll", "document.body",
-                 "getAttribute", "closest", "parentElement", "children", "textContent", "innerText", "querySelectorAll", "setTimeout", "Promise")
+                 "getAttribute", "closest", "parentElement", "children", "textContent", "innerText", "querySelectorAll", "setTimeout", "Promise",
+                 "checkVisibility", "matches", "classList")
 
 # The one template. `@@CONSTS@@` is the tables above, JSON-quoted (one source: the test checks each is in the constant); `@@FOLD@@` the apostrophes it folds; `@@EXTRA@@` the facts a kind
 # adds to a read. Nothing else is a hole.
@@ -124,6 +138,8 @@ SCRIPT = r"""(async () => {
   const lower = s => (s || '').toLowerCase();
   const norm = s => lower(s).replace(/[@@FOLD@@]/g, "'").replace(/\s+/g, ' ').trim();
   const text = e => (e.innerText || '').trim();
+  const shown = e => (typeof e.checkVisibility === 'function') ? e.checkVisibility({checkOpacity: true, checkVisibilityCSS: true}) : true;
+  const token = new RegExp(TOKEN);
   const sleep = () => new Promise(r => setTimeout(r, GAP));
   const read = () => {
     const keyOf = e => e.getAttribute('componentkey') || e.getAttribute('data-occludable-job-id') || e.getAttribute('data-job-id');
@@ -156,7 +172,9 @@ SCRIPT = r"""(async () => {
       about = Math.max(about, text(b).length - text(h).length);
       if (b.querySelectorAll(IDS + ', ' + CHROME).length === 0) regions.push(b);
     }
-    const speaking = Array.from(document.querySelectorAll(NOTICE)).concat(Array.from(document.querySelectorAll(LIVE)).filter(e => e.getAttribute('aria-live') !== 'off'));
+    const html = document.querySelectorAll('html')[0];
+    const real = e => e !== document.body && e !== html && (e.matches(ROLEISH) || Array.from(e.classList).some(t => token.test(t)));
+    const speaking = Array.from(document.querySelectorAll(NOTICE)).filter(real).concat(Array.from(document.querySelectorAll(LIVE)).filter(e => e.getAttribute('aria-live') !== 'off'));
     const inRegion = e => { for (let p = e; p; p = p.parentElement) { if (regions.includes(p)) return true; } return !!e.closest(LAYOUT); };
     let banner = 0;
     for (const e of Array.from(document.querySelectorAll('*'))) {
@@ -164,11 +182,10 @@ SCRIPT = r"""(async () => {
       const t = norm(e.innerText);
       if (t.split(' ').length >= PROSE && page.includes(t) && !inRegion(e)) banner++;
     }
-    const html = document.querySelectorAll('html')[0];
     return {proto: location.protocol, host: location.hostname, path: location.pathname, ready: document.readyState === 'complete',
-            password: document.querySelectorAll(PASSWORD).length, challenge: document.querySelectorAll(CHALLENGE).length,
-            modal: Array.from(document.querySelectorAll(MODAL)).filter(m => text(m).length > 0).length,
-            notice: speaking.filter((e, i) => text(e).length > 0 && speaking.indexOf(e) === i).length, banner: banner, lang: html ? (html.getAttribute('lang') || '') : '',
+            password: document.querySelectorAll(PASSWORD).length, challenge: Array.from(document.querySelectorAll(CHALLENGE)).filter(shown).length,
+            modal: Array.from(document.querySelectorAll(MODAL)).filter(m => shown(m) && text(m).length > 0).length,
+            notice: speaking.filter((e, i) => shown(e) && text(e).length > 0 && speaking.indexOf(e) === i).length, banner: banner, lang: html ? (html.getAttribute('lang') || '') : '',
             kinds: Object.keys(PHRASES).filter(k => PHRASES[k].some(p => page.includes(p))), @@EXTRA@@};
   };
   for (let i = 0; i < WAIT && document.readyState !== 'complete'; i++) await sleep();
@@ -190,7 +207,7 @@ _EXTRA = {
 def _consts():
     """The script's `const` list: every table of this module, JSON-quoted, under the name the script uses."""
     pairs = (("GAP", GAP_MS), ("WAIT", WAIT_POLLS), ("PHRASES", PHRASES), ("IDS", CARD_IDS), ("DISMISS", DISMISS), ("CHALLENGE", CHALLENGE), ("MODAL", MODAL), ("PASSWORD", PASSWORD),
-             ("NOTICE", NOTICE), ("LIVE", LIVE), ("MAIN", MAIN), ("CHROME", LAYOUT.replace(MAIN + ", ", "")), ("LAYOUT", LAYOUT), ("BLOCKS", BLOCKS), ("NOISE", NOISE), ("PROSE", PROSE_WORDS))
+             ("NOTICE", NOTICE), ("ROLEISH", ROLEISH), ("TOKEN", TOKEN), ("LIVE", LIVE), ("MAIN", MAIN), ("CHROME", LAYOUT.replace(MAIN + ", ", "")), ("LAYOUT", LAYOUT), ("BLOCKS", BLOCKS), ("NOISE", NOISE), ("PROSE", PROSE_WORDS))
     return ", ".join("%s = %s" % (name, json.dumps(value)) for name, value in pairs)
 
 

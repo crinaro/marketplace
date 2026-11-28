@@ -1,7 +1,7 @@
 {
   "name": "jobsearch",
   "description": "A job-search assistant: sweeps your mailbox and LinkedIn for replies and interview invitations, screens roles against your own compensation floors and geography, tracks every application and conversation, and drafts outreach in your voice. It never sends anything: you send every message yourself, and a message you approve can be put in your drafts for you.",
-  "version": "0.95.0",
+  "version": "0.95.1",
   "author": {
     "name": "Crinaro",
     "email": "marketplace@crinaro.ai"
